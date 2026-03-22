@@ -752,24 +752,15 @@ function handleGameMessage(room, playerId, msg) {
         return;
       }
 
-      if (!room.enterConstructionPlayers) room.enterConstructionPlayers = new Set();
-      room.enterConstructionPlayers.add(playerId);
-      pushLog(`${playerId.toUpperCase()} 请求进入构筑`);
-
-      // 通知对方
-      const oppId = playerId === "p1" ? "p2" : "p1";
-      sendToPlayer(room, oppId, { type: "OPPONENT_ENTER_CONSTRUCTION" });
-
-      // 当双方都请求时进入构筑
-      if (room.enterConstructionPlayers.has("p1") && room.enterConstructionPlayers.has("p2")) {
-        room.enterConstructionPlayers.clear();
-        const entered = enterConstructionIfNeeded(room.gameState, pushLog);
-        room.gameState.awaitingConstruction = false;
-        if (entered) {
-          beginNextConstructionStep(room.gameState, pushLog);
-        }
-        broadcastState(room, logs);
+      // 异步构筑：任意一方请求即可进入构筑阶段
+      pushLog(`${playerId.toUpperCase()} 请求进入构筑，立即进入构筑阶段`);
+      
+      const entered = enterConstructionIfNeeded(room.gameState, pushLog);
+      room.gameState.awaitingConstruction = false;
+      if (entered) {
+        beginNextConstructionStep(room.gameState, pushLog);
       }
+      broadcastState(room, logs);
       break;
     }
 

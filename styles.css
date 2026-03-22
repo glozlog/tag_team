@@ -133,6 +133,19 @@ button:disabled {
   background: #101725;
 }
 
+/* 方案A+C：包装元素样式 */
+.fighter-marks {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+
+.fighter-dynamic {
+  /* 动态区域不需要额外样式 */
+}
+
 .police-mark {
   position: absolute;
   top: 8px;

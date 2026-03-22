@@ -29,6 +29,7 @@ import {
   renderPowerGrid,
   renderFighter as renderFighterBase,
   positionHpArrows,
+  updateFighterDOM,
 } from './shared-ui.mjs';
 
 function createApp() {
@@ -167,8 +168,45 @@ function createApp() {
 
     const p1Main = state.phase === PHASE.BATTLE && state.lastFlip ? state.lastFlip.p1Card?.fighterName : null;
     const p2Main = state.phase === PHASE.BATTLE && state.lastFlip ? state.lastFlip.p2Card?.fighterName : null;
-    els.p1Fighters.innerHTML = p1.fighters.map((f) => renderFighter(f, { isMain: p1Main === f.name })).join("");
-    els.p2Fighters.innerHTML = p2.fighters.map((f) => renderFighter(f, { isMain: p2Main === f.name })).join("");
+    
+    // 方案A+C： DOM 复用 - 只更新动态部分，保持头像不变
+    const updateOrCreateFighters = (container, fighters, mainName) => {
+      const existingEls = new Map();
+      container.querySelectorAll(".fighter[data-fighter-id]").forEach((el) => {
+        existingEls.set(el.getAttribute("data-fighter-id"), el);
+      });
+      const currentIds = new Set(fighters.map((f) => f.id));
+      // 移除不再存在的战士
+      for (const [id, el] of existingEls) {
+        if (!currentIds.has(id)) el.remove();
+      }
+      // 更新或创建战士
+      fighters.forEach((f, idx) => {
+        const existingEl = existingEls.get(f.id);
+        const opts = { isMain: mainName === f.name };
+        if (existingEl) {
+          // 已存在：增量更新（保持头像不变）
+          updateFighterDOM(existingEl, f, opts, { state, PHASE });
+          // 确保顺序正确
+          if (container.children[idx] !== existingEl) {
+            container.insertBefore(existingEl, container.children[idx]);
+          }
+        } else {
+          // 不存在：创建新元素
+          const html = renderFighter(f, opts);
+          const temp = document.createElement("div");
+          temp.innerHTML = html;
+          const newEl = temp.firstElementChild;
+          if (container.children[idx]) {
+            container.insertBefore(newEl, container.children[idx]);
+          } else {
+            container.appendChild(newEl);
+          }
+        }
+      });
+    };
+    updateOrCreateFighters(els.p1Fighters, p1.fighters, p1Main);
+    updateOrCreateFighters(els.p2Fighters, p2.fighters, p2Main);
     document.querySelectorAll(`[data-elf-pick]`).forEach((btn) => {
       btn.addEventListener("click", () => {
         const raw = btn.getAttribute("data-elf-pick") || "";
@@ -1589,7 +1627,9 @@ function createApp() {
       p1FlippedAtStart: p1Card?.flipped === true,
       p2FlippedAtStart: p2Card?.flipped === true,
     };
-    renderBattleReveal();
+    // 方案E优化：不再直接调用 renderBattleReveal()，统一由 scheduleRender() 触发
+    // 避免同一帧内重复渲染
+    scheduleRender();
     pushLog(`翻牌（轮次${state.round}回合${state.turn}）：P1 ${formatCardLabel(p1Card)} / P2 ${formatCardLabel(p2Card)}`);
 
     const ctx = buildContextForBattle(p1, p2, p1Card, p2Card);
@@ -1882,4 +1922,42 @@ function createApp() {
   });
 }
 
+createApp();
+    els.logDialog.showModal();
+  });
+  els.btnNextBattle.addEventListener("click", battleTurn);
+  els.btnEnterConstruction.addEventListener("click", enterConstructionNow);
+  els.btnConfirmEnd.addEventListener("click", confirmEndNow);
+  els.btnCompare.addEventListener("pointerdown", (e) => {
+    if (els.btnCompare.disabled) return;
+    state.compareHold = true;
+    try {
+      els.btnCompare.setPointerCapture(e.pointerId);
+    } catch {}
+    renderPlayers();
+  });
+  els.btnCompare.addEventListener("pointerup", () => {
+    if (!state.compareHold) return;
+    state.compareHold = false;
+    renderPlayers();
+  });
+  els.btnCompare.addEventListener("pointercancel", () => {
+    if (!state.compareHold) return;
+    state.compareHold = false;
+    renderPlayers();
+  });
+  window.addEventListener("resize", () => requestAnimationFrame(() => requestAnimationFrame(positionHpArrows)));
+  els.btnClearLog.addEventListener("click", (e) => {
+    e.preventDefault();
+    clearLog();
+  });
+
+  init().catch((e) => {
+    state.phase = PHASE.SETUP;
+    render();
+    pushLog(`初始化失败：${e?.message ?? String(e)}`);
+  });
+}
+
+createApp();
 createApp();

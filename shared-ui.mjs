@@ -449,27 +449,32 @@ export function renderFighter(f, opts, ctx) {
     hpHtml = renderElfHpGrid(f, shownHp, hpOverlay);
   }
   const powerHtml = renderPowerGrid({ ...f, power: shownPower }, powerOverlay);
+  // 方案A+C：添加 data-fighter-id 用于 DOM 复用
   return `
-    <div class="fighter${isMain ? " fighter-main" : ""}">
-      ${policeMark}
-      ${flameMark}
-      ${ningMark}
-      ${guardMark}
-      ${golemBlockMark}
+    <div class="fighter${isMain ? " fighter-main" : ""}" data-fighter-id="${escapeHtml(f.id)}">
+      <div class="fighter-marks">
+        ${policeMark}
+        ${flameMark}
+        ${ningMark}
+        ${guardMark}
+        ${golemBlockMark}
+      </div>
       <div class="fighter-top">
         ${headshot}
         <div class="fighter-name">${f.name}</div>
         ${soulMark}
         ${isKo ? `<div class="ko-badge">KO!</div>` : ""}
       </div>
-      ${hpHtml}
-      ${powerHtml}
-      ${elfPickHtml}
-      ${revBar}
-      ${shipBar}
-      ${rageBar}
-      ${planBar}
-      ${snakeBar}
+      <div class="fighter-dynamic">
+        ${hpHtml}
+        ${powerHtml}
+        ${elfPickHtml}
+        ${revBar}
+        ${shipBar}
+        ${rageBar}
+        ${planBar}
+        ${snakeBar}
+      </div>
     </div>
   `;
 }
@@ -521,5 +526,207 @@ export function positionHpArrows() {
     jump.style.left = `${left}px`;
     jump.style.width = `${Math.max(0, width - tip)}px`;
     jump.style.top = `${y}px`;
+  }
+}
+
+/**
+ * 方案A+C：增量更新战士 DOM
+ * 只更新动态部分（状态标记、HP、力量等），保持头像不变
+ * @param {HTMLElement} el - 已存在的战士 DOM 元素
+ * @param {Object} f - 战士对象
+ * @param {Object} opts - 选项 { isMain: boolean, elfPickHtml: string }
+ * @param {Object} ctx - 上下文 { state, PHASE }
+ */
+export function updateFighterDOM(el, f, opts, ctx) {
+  if (!el || !f) return;
+  const { state, PHASE } = ctx;
+  const isMain = opts?.isMain === true;
+  const elfPickHtml = opts?.elfPickHtml ?? "";
+
+  // 更新 main 样式
+  el.classList.toggle("fighter-main", isMain);
+
+  // 更新状态标记区域
+  const marksContainer = el.querySelector(".fighter-marks");
+  if (marksContainer) {
+    const policeMark = f.police === true ? `<div class="police-mark">警</div>` : "";
+    const flameTotal = (() => {
+      const v = f?.flame;
+      if (!v || typeof v !== "object") return 0;
+      let sum = 0;
+      for (const x of Object.values(v)) sum += Number(x) || 0;
+      return Math.max(0, Math.min(5, sum));
+    })();
+    const flameMark = flameTotal > 0 ? `<div class="flame-mark">焰${flameTotal}</div>` : "";
+    const ningTotal = (() => {
+      const v = f?.ning;
+      if (!v || typeof v !== "object") return 0;
+      let sum = 0;
+      for (const x of Object.values(v)) sum += Number(x) || 0;
+      return Math.max(0, Math.min(2, sum));
+    })();
+    const ningMark = ningTotal > 0 ? `<div class="ning-mark">凝${ningTotal}</div>` : "";
+    const guardMark = f.guard === true ? `<div class="guard-mark">护</div>` : "";
+    const pidForMark = String(f?.id ?? "").split(":")[0];
+    const golemBlockMark =
+      f?.name === "魔像" &&
+      state?.phase === PHASE.BATTLE &&
+      state?.lastRound?.round === state?.round &&
+      state?.lastRound?.turn === state?.turn &&
+      state?.lastRound?.guardBlockedByPlayerId?.has?.(pidForMark) === true
+        ? `<div class="golem-block-mark">魔像抵挡！</div>`
+        : "";
+    marksContainer.innerHTML = policeMark + flameMark + ningMark + guardMark + golemBlockMark;
+  }
+
+  // 更新魂标记和KO标记
+  const topContainer = el.querySelector(".fighter-top");
+  if (topContainer) {
+    // 更新魂标记
+    let soulMarkEl = topContainer.querySelector(".soul-mark");
+    if (f.name === "精灵族") {
+      const soulVal = Math.max(0, Number(f?.elf?.soul) || 0);
+      if (soulMarkEl) {
+        soulMarkEl.textContent = `魂${soulVal}`;
+      } else {
+        const nameEl = topContainer.querySelector(".fighter-name");
+        if (nameEl) {
+          nameEl.insertAdjacentHTML("afterend", `<div class="soul-mark">魂${soulVal}</div>`);
+        }
+      }
+    } else if (soulMarkEl) {
+      soulMarkEl.remove();
+    }
+    // 更新KO标记
+    function isKoNow(fx) {
+      if (fx?.koByFlame === true) return true;
+      if (fx?.name === "精灵族") return fx?.elf?.gameKo === true;
+      if (Array.isArray(fx.koLines) && fx.koLines.length > 0) {
+        return fx.koLines.includes(Number(fx.hp) || 0);
+      }
+      return Number(fx.hp) <= Number(fx.koLine);
+    }
+    const isKo = isKoNow(f);
+    let koBadge = topContainer.querySelector(".ko-badge");
+    if (isKo && !koBadge) {
+      topContainer.insertAdjacentHTML("beforeend", `<div class="ko-badge">KO!</div>`);
+    } else if (!isKo && koBadge) {
+      koBadge.remove();
+    }
+  }
+
+  // 更新动态区域（HP、力量、特殊条等）
+  const dynamicContainer = el.querySelector(".fighter-dynamic");
+  if (dynamicContainer) {
+    const lastRound = state.lastRound;
+    const comparing = state.compareHold === true && lastRound?.before?.has(f.id);
+    const base = comparing ? lastRound.before.get(f.id) : null;
+    const shownHp = base ? base.hp : f.hp;
+    const shownPower = base ? base.power : f.power;
+
+    let powerOverlay = null;
+    let hpOverlay = null;
+    const overlay =
+      !comparing && state.phase === PHASE.BATTLE && lastRound?.before?.has(f.id) && lastRound?.after?.has(f.id)
+        ? lastRound
+        : !comparing &&
+            state.lastIntermissionEffect?.before?.has(f.id) &&
+            state.lastIntermissionEffect?.after?.has(f.id) &&
+            (state.phase === PHASE.CONSTRUCTION || (state.phase === PHASE.BATTLE && !state.lastFlip))
+          ? state.lastIntermissionEffect
+          : null;
+    if (overlay) {
+      const b = overlay.before.get(f.id);
+      const a = overlay.after.get(f.id);
+      const dp = (a.power ?? 0) - (b.power ?? 0);
+      const dh = (a.hp ?? 0) - (b.hp ?? 0);
+      if (dp !== 0) powerOverlay = { oldPower: b.power, powerDelta: dp, showPowerDelta: true };
+      const hpPath = overlay?.hpTraceById?.get?.(f.id) ?? null;
+      hpOverlay = { oldHp: b.hp, hpDelta: dh, showHpDelta: true, hpPath };
+    }
+    let hpHtml = renderHpGrid({ ...f, hp: shownHp }, hpOverlay);
+    if (f.name === "精灵族" && f.elf) {
+      hpHtml = renderElfHpGrid(f, shownHp, hpOverlay);
+    }
+    const powerHtml = renderPowerGrid({ ...f, power: shownPower }, powerOverlay);
+
+    // 构建特殊条
+    const rev = Math.max(0, Math.min(4, Number(f.revelation) || 0));
+    const revBar =
+      f.name === "贞德"
+        ? `
+          <div class="revelation-wrap">
+            <div class="revelation-label">神示</div>
+            <div class="revelation-grid">
+              <div class="revelation-cell${rev === 1 ? " active" : ""}"></div>
+              <div class="revelation-cell${rev === 2 ? " active" : ""}"><div class="revelation-eff">力+1</div></div>
+              <div class="revelation-cell${rev === 3 ? " active" : ""}"></div>
+              <div class="revelation-cell${rev === 4 ? " active" : ""}"><div class="revelation-eff">友力+1</div></div>
+            </div>
+          </div>
+        `
+        : "";
+    const ship = Math.max(0, Math.min(20, Number(f.battleship) || 0));
+    let shipCells = "";
+    for (let i = 1; i <= 20; i++) {
+      shipCells += `<div class="ship-cell${i <= ship ? " filled" : ""}${ship > 0 && i === ship ? " current" : ""}"></div>`;
+    }
+    const shipBar =
+      f.name === "郑一嫂"
+        ? `
+          <div class="ship-wrap">
+            <div class="ship-label">战船</div>
+            <div class="ship-grid">${shipCells}</div>
+            <div class="ship-num">${ship}/20</div>
+          </div>
+        `
+        : "";
+    const rage = Math.max(0, Math.min(7, Number(f.rage) || 0));
+    let rageCells = "";
+    for (let i = 1; i <= 7; i++) {
+      rageCells += `<div class="rage-cell${i <= rage ? " filled" : ""}${rage > 0 && i === rage ? " current" : ""}"></div>`;
+    }
+    const formLabel = f.bodvarForm === "bear" ? "熊" : "人";
+    const rageBar =
+      f.name === "博德瓦尔"
+        ? `
+          <div class="rage-wrap">
+            <div class="rage-label">怒</div>
+            <div class="rage-grid">${rageCells}</div>
+            <div class="rage-num">${formLabel} ${rage}/7</div>
+          </div>
+        `
+        : "";
+    const planState = f?.plan;
+    const planBar =
+      f.name === "米莱狄" && planState
+        ? `
+          <div class="plan-wrap">
+            <div class="plan-label">计划</div>
+            <div class="plan-num">未${(planState.available ?? []).length} 已${(planState.ready ?? []).length} 弃${(planState.discard ?? []).length}</div>
+          </div>
+        `
+        : "";
+    const snakeFlipMark = f?.snakeFlipMark ?? null;
+    const snakeSeq = (() => {
+      const cur = (Number(f.snake) || 0) === 1 ? 1 : 0;
+      const base = Array.isArray(snakeFlipMark) && snakeFlipMark.length > 0 ? snakeFlipMark.map((v) => ((Number(v) || 0) === 1 ? 1 : 0)) : [cur];
+      if (base[base.length - 1] !== cur) base.push(cur);
+      return base;
+    })();
+    const snakeChainHtml = snakeSeq
+      .map((v) => `<span class="snake-chip ${v === 1 ? "black" : "white"}"></span>`)
+      .join(`<span class="snake-arrow">→</span>`);
+    const snakeBar =
+      f.name === "靡菲斯特"
+        ? `
+          <div class="snake-wrap">
+            <div class="snake-label">蛇</div>
+            <div class="snake-cell"><div class="snake-chain">${snakeChainHtml}</div></div>
+          </div>
+        `
+        : "";
+
+    dynamicContainer.innerHTML = hpHtml + powerHtml + elfPickHtml + revBar + shipBar + rageBar + planBar + snakeBar;
   }
 }

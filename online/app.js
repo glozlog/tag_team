@@ -712,14 +712,7 @@ function createApp() {
       `;
       return;
     }
-    if (waitingForOpponent === "construction") {
-      els.battleReveal.innerHTML = `
-        <div class="battle-reveal-inner">
-          <div class="battle-hint waiting">等待对方进入构筑...</div>
-        </div>
-      `;
-      return;
-    }
+    // 异步构筑：不再需要等待对方进入构筑的逻辑
     const last = state.lastFlip;
     if (!last) {
       els.battleReveal.innerHTML = `
@@ -925,15 +918,15 @@ function createApp() {
         els.constructionPanel.innerHTML = `
           <div class="construction-card">
             <div style="text-align: center; margin-bottom: 16px;"><strong>${myLabel}</strong>：请选择 2 位战士</div>
-            <div class="setup-pick-grid" style="grid-template-columns: 200px 1fr;">
+            <div class="setup-pick-grid" style="grid-template-columns: 1fr; max-width: 600px; margin: 0 auto;">
               <div class="setup-side" data-player="${myPlayerId || 'p1'}">
                 <div class="setup-side-title">我的选择</div>
-                <div class="setup-slots">
+                <div class="setup-slots" style="display: flex; gap: 12px; justify-content: center;">
                   <div class="setup-slot" data-setup-pick="slot" data-player="${myPlayerId || 'p1'}" data-slot="a">${slotLabel(mySlotA, "空槽1")}</div>
                   <div class="setup-slot" data-setup-pick="slot" data-player="${myPlayerId || 'p1'}" data-slot="b">${slotLabel(mySlotB, "空槽2")}</div>
                 </div>
               </div>
-              <div class="setup-pool setup-pool-grid" data-player="pool">
+              <div class="setup-pool setup-pool-grid" data-player="pool" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
                 ${poolCells.join("")}
               </div>
             </div>
@@ -1530,7 +1523,10 @@ function createApp() {
     function renderDone(playerId) {
       return `
         <div class="construction-card" data-player="${playerId}">
-          <div><strong>${playerId.toUpperCase()}</strong> 构筑：已确认，等待另一方</div>
+          <div><strong>${playerId.toUpperCase()}</strong> 构筑：已确认</div>
+          <div class="waiting-hint" style="margin-top: 16px; padding: 12px; background: rgba(91, 140, 255, 0.1); border-radius: 8px; text-align: center; color: #94a3b8;">
+            等待对方完成构筑....
+          </div>
         </div>
       `;
     }
@@ -2049,7 +2045,7 @@ function battleTurn() {
     if (!state.awaitingConstruction) return;
     if (state.pendingGameOver) return;
     wsSend({ type: "ENTER_CONSTRUCTION" });
-    waitingForOpponent = "construction";
+    // 异步构筑：不需要等待对方，服务端会立即进入构筑阶段
     scheduleRender();
   });
   els.btnConfirmEnd.addEventListener("click", () => {
