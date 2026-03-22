@@ -278,6 +278,17 @@ button:disabled {
   object-fit: cover;
   background: rgba(16, 23, 37, 0.55);
   flex: 0 0 auto;
+  /* 防止重新渲染时的闪烁 */
+  transition: opacity 0.15s ease;
+}
+
+/* 图片加载完成前的占位样式 */
+.fighter-headshot[loading] {
+  opacity: 0.7;
+}
+
+.fighter-headshot:not([src]) {
+  background: linear-gradient(135deg, #1a2332 0%, #0e131b 100%);
 }
 
 .ko-badge {
@@ -1346,6 +1357,16 @@ body.setup-dragging {
   opacity: 0.85;
   font-size: 12px;
 }
+.battle-hint.waiting {
+  font-size: 16px;
+  opacity: 1;
+  color: #e0a040;
+  animation: pulse-text 1.5s ease-in-out infinite;
+}
+@keyframes pulse-text {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
 
 .battle-cards {
   display: grid;
@@ -1486,4 +1507,140 @@ input[type="radio"] {
   font-size: 12px;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+/* === 连接状态指示器 === */
+.connection-status {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #8892a4;
+  z-index: 100;
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+}
+.status-dot.connected { background: #22c55e; }
+.status-dot.reconnecting { background: #eab308; animation: pulse 1s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* === 大厅面板 === */
+.lobby-panel {
+  text-align: center;
+  padding: 60px 20px;
+}
+.lobby-panel.hidden { display: none; }
+.lobby-container {
+  max-width: 400px;
+  margin: 0 auto;
+}
+.lobby-container h2 {
+  font-size: 28px;
+  color: #e2e8f0;
+  margin-bottom: 32px;
+}
+.lobby-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+}
+.lobby-btn {
+  padding: 12px 32px;
+  font-size: 16px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: #1e293b;
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.lobby-btn:hover { background: #334155; }
+.lobby-join {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.room-code-input {
+  width: 100px;
+  padding: 12px 16px;
+  font-size: 20px;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 4px;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+.lobby-waiting {
+  margin-top: 32px;
+  padding: 24px;
+  border: 1px dashed #334155;
+  border-radius: 12px;
+}
+.lobby-waiting.hidden { display: none; }
+.room-code-big {
+  font-size: 48px;
+  font-weight: bold;
+  letter-spacing: 8px;
+  color: #38bdf8;
+}
+.room-code-display { margin-bottom: 12px; }
+.lobby-status {
+  margin-top: 16px;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.lobby-ready {
+  margin-top: 32px;
+  padding: 24px;
+  border: 1px solid #22c55e;
+  border-radius: 12px;
+  background: rgba(34, 197, 94, 0.1);
+}
+.lobby-ready.hidden { display: none; }
+
+/* === 游戏主界面 === */
+.game-interface { }
+.game-interface.hidden { display: none; }
+.ready-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+  color: #22c55e;
+}
+.ready-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* === 等待提示 === */
+.waiting-overlay {
+  padding: 24px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 16px;
+}
+
+/* === 对方牌库隐藏显示 === */
+.deck-hidden {
+  color: #64748b;
+  font-style: italic;
 }

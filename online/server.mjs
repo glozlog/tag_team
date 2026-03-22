@@ -953,6 +953,25 @@ const server = http.createServer(async (req, res) => {
 
     const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
     const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+
+    // 特殊路由：/shared-ui.mjs 从父目录提供
+    if (pathname === "/shared-ui.mjs") {
+      const sharedUiPath = path.join(__dirname, "..", "shared-ui.mjs");
+      try {
+        const data = await readFile(sharedUiPath);
+        res.writeHead(200, {
+          "Content-Type": "text/javascript; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(data);
+        return;
+      } catch {
+        res.writeHead(404);
+        res.end("Not Found: shared-ui.mjs");
+        return;
+      }
+    }
+
     const filePath = safeResolve(__dirname, pathname);
     if (!filePath) {
       res.writeHead(403);
