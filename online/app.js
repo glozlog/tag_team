@@ -837,8 +837,8 @@ function createApp() {
   }
 
   function renderConstruction() {
-    els.constructionPanel.innerHTML = "";
     if (state.phase === PHASE.SETUP) {
+      els.constructionPanel.innerHTML = "";
       // 检查是否双方都已加入房间
       if (roomCode && !bothPlayersReady) {
         els.constructionPanel.innerHTML = `
@@ -1563,13 +1563,16 @@ function createApp() {
       return;
     }
 
-    if (state.phase !== PHASE.CONSTRUCTION) return;
+    if (state.phase !== PHASE.CONSTRUCTION) {
+      els.constructionPanel.innerHTML = "";
+      return;
+    }
     const p1Choice = state.construction.p1;
     const p2Choice = state.construction.p2;
 
-    function renderChoice(playerId, choice) {
-      const player = state.players[playerId];
-      const drawnBoxes = choice.drawn
+    // 生成选择框 HTML
+    function renderDrawnBoxes(playerId, choice) {
+      return choice.drawn
         .map((c, idx) => {
           const selected = idx === choice.insertIndex ? " selected" : "";
           return `
@@ -1580,7 +1583,10 @@ function createApp() {
           `;
         })
         .join("");
+    }
 
+    // 生成牌堆区域 HTML
+    function renderBoardHtml(playerId, choice, player) {
       const insertCard = choice.drawn[choice.insertIndex];
       const placed = Number.isFinite(choice.insertPos);
       const dragging = choice.dragging === true;
@@ -1609,6 +1615,16 @@ function createApp() {
           `;
         }
       }
+      return board;
+    }
+
+    function renderChoice(playerId, choice) {
+      const player = state.players[playerId];
+      const drawnBoxes = renderDrawnBoxes(playerId, choice);
+      const insertCard = choice.drawn[choice.insertIndex];
+      const placed = Number.isFinite(choice.insertPos);
+      const dragging = choice.dragging === true;
+      const board = renderBoardHtml(playerId, choice, player);
 
       const order01 = choice.bottomOrder === "01" ? "selected" : "";
       const order10 = choice.bottomOrder === "10" ? "selected" : "";
@@ -1622,7 +1638,7 @@ function createApp() {
       return `
         <div class="construction-card" data-player="${playerId}">
           <div><strong>${playerId.toUpperCase()}</strong> 构筑：从构筑牌库顶抽 3 张，选 1 张入战斗牌库</div>
-          <div class="construction-row">${drawnBoxes}</div>
+          <div class="construction-row construction-choices-row">${drawnBoxes}</div>
           <div class="construction-row" style="align-items:flex-start;">
             <div style="min-width:110px;">插入位置</div>
             <div class="insert-area">
@@ -1640,13 +1656,13 @@ function createApp() {
           </div>
           <div class="construction-row">
             <div>剩余 2 张入底顺序</div>
-            <select data-field="bottomOrder">
+            <select data-field="bottomOrder" data-player="${playerId}">
               <option value="01" ${order01}>按剩余显示顺序</option>
               <option value="10" ${order10}>交换顺序</option>
             </select>
-            <div style="opacity:0.8;">剩余：${restLabel}</div>
+            <div style="opacity:0.8;" class="rest-label">剩余：${restLabel}</div>
             <div class="spacer"></div>
-            <button type="button" data-action="apply" ${canApply}>确认该方构筑</button>
+            <button type="button" data-action="apply" data-player="${playerId}" ${canApply}>确认该方构筑</button>
           </div>
         </div>
       `;
@@ -1654,7 +1670,7 @@ function createApp() {
 
     function renderDone(playerId) {
       return `
-        <div class="construction-card" data-player="${playerId}">
+        <div class="construction-card construction-done" data-player="${playerId}">
           <div><strong>${playerId.toUpperCase()}</strong> 构筑：已确认</div>
           <div class="waiting-hint" style="margin-top: 16px; padding: 12px; background: rgba(91, 140, 255, 0.1); border-radius: 8px; text-align: center; color: #94a3b8;">
             等待对方完成构筑....
@@ -1686,363 +1702,195 @@ function createApp() {
       return renderDone(pid);
     }
 
+    // 增量更新单个玩家的构筑面板
+    function updateChoiceIncremental(card, playerId, choice) {
+      const player = state.players[playerId];
+      const insertCard = choice.drawn[choice.insertIndex];
+      const placed = Number.isFinite(choice.insertPos);
+      const dragging = choice.dragging === true;
+
+      // 1. 更新选择框的 .selected 类名
+      card.querySelectorAll(`.construction-choice[data-player="${playerId}"]`).forEach((el) => {
+        const idx = Number(el.getAttribute("data-drawn-idx"));
+        el.classList.toggle("selected", idx === choice.insertIndex);
+      });
+
+      // 2. 更新 insert-outside 区域（待插入卡和提示）
+      const outsideEl = card.querySelector(`.insert-outside[data-player="${playerId}"]`);
+      if (outsideEl) {
+        const outsideCard = outsideEl.querySelector(".insert-card.outside");
+        if (outsideCard) {
+          const titleEl = outsideCard.querySelector(".insert-title");
+          const textEl = outsideCard.querySelector(".insert-text");
+          if (titleEl) titleEl.innerHTML = `待插入：${cardTitleHtml(insertCard)}`;
+          if (textEl) textEl.innerHTML = displayCardText(insertCard);
+        }
+        const hintEl = outsideEl.querySelector(".insert-outside-hint");
+        if (hintEl) {
+          hintEl.textContent = placed ? "已放置，可拖回撤销/改位置" : "拖动到右侧牌堆插入位置";
+        }
+      }
+
+      // 3. 更新 insert-board 区域
+      const boardEl = card.querySelector(`.insert-board[data-player="${playerId}"]`);
+      if (boardEl) {
+        boardEl.classList.toggle("dragging", dragging);
+        // 重建 board 内容（dropzone + 已放置卡 + deck-card）
+        boardEl.innerHTML = renderBoardHtml(playerId, choice, player);
+      }
+
+      // 4. 更新 select 和按钮
+      const orderEl = card.querySelector(`select[data-field="bottomOrder"][data-player="${playerId}"]`);
+      if (orderEl) {
+        orderEl.value = choice.bottomOrder || "01";
+      }
+
+      const applyBtn = card.querySelector(`button[data-action="apply"][data-player="${playerId}"]`);
+      if (applyBtn) {
+        applyBtn.disabled = !placed;
+      }
+
+      // 5. 更新剩余牌标签
+      const rest = choice.drawn.filter((_, idx) => idx !== choice.insertIndex);
+      const restLabel = rest.length === 2 ? `${rest[0].fighterName}#${rest[0].cardNo} / ${rest[1].fighterName}#${rest[1].cardNo}` : "-";
+      const restLabelEl = card.querySelector(".rest-label");
+      if (restLabelEl) {
+        restLabelEl.textContent = `剩余：${restLabel}`;
+      }
+    }
+
+    // 检测是否已渲染过 CONSTRUCTION 阶段 DOM（用于 DOM 复用）
+    const existingMarker = els.constructionPanel.querySelector('[data-construction-rendered="true"]');
+    
+    if (existingMarker) {
+      // === 增量更新模式 ===
+      const cards = els.constructionPanel.querySelectorAll(".construction-card");
+      for (const card of cards) {
+        const playerId = card.getAttribute("data-player");
+        if (!playerId) continue;
+        const choice = state.construction[playerId];
+        const isDoneCard = card.classList.contains("construction-done");
+        
+        if (choice && isDoneCard) {
+          // 需要从 done 状态切换回 choice 状态 - 重建该卡片
+          const newHtml = renderPanel(playerId, choice);
+          const temp = document.createElement("div");
+          temp.innerHTML = newHtml;
+          const newCard = temp.firstElementChild;
+          card.replaceWith(newCard);
+        } else if (!choice && !isDoneCard) {
+          // 需要从 choice 状态切换到 done 状态 - 重建该卡片
+          const newHtml = renderDone(playerId);
+          const temp = document.createElement("div");
+          temp.innerHTML = newHtml;
+          const newCard = temp.firstElementChild;
+          card.replaceWith(newCard);
+        } else if (choice && typeof choice === "object" && !isDoneCard) {
+          // 正常增量更新
+          updateChoiceIncremental(card, playerId, choice);
+        } else {
+          // 字符串状态 (pending/not_entered) 或其他，走重建路径
+          card.innerHTML = renderPanel(playerId, choice);
+        }
+        // 如果 !choice && isDoneCard，无需更新
+      }
+      return; // 增量更新完成，跳过事件绑定
+    }
+
+    // === 首次渲染模式 ===
     const panels = [];
     panels.push(renderPanel("p1", p1Choice));
     panels.push(renderPanel("p2", p2Choice));
-    els.constructionPanel.innerHTML = panels.join("");
+    els.constructionPanel.innerHTML = `<div data-construction-rendered="true">${panels.join("")}</div>`;
 
-    els.constructionPanel.querySelectorAll(".construction-card").forEach((card) => {
-      const playerId = card.getAttribute("data-player");
-      const choice = state.construction[playerId];
-      if (!choice || typeof choice !== "object") return;
-
-      const boardEl = card.querySelector(`.insert-board[data-player="${playerId}"]`);
-      const computePos = (ev) => {
-        const targetCard = ev.target?.closest?.(`.deck-card[data-index]`);
-        if (targetCard) {
-          const idx = Number(targetCard.getAttribute("data-index"));
-          if (Number.isFinite(idx)) {
-            const rect = targetCard.getBoundingClientRect();
-            const mid = rect.top + rect.height / 2;
-            return ev.clientY < mid ? idx : idx + 1;
-          }
-        }
-        const cards = Array.from(boardEl.querySelectorAll(`.deck-card[data-index]`));
-        if (cards.length === 0) return 0;
-        for (const el of cards) {
-          const idx = Number(el.getAttribute("data-index"));
-          if (!Number.isFinite(idx)) continue;
-          const rect = el.getBoundingClientRect();
+    // === 事件委托绑定（仅首次渲染时执行） ===
+    
+    // 辅助函数：计算放置位置
+    const computePosForBoard = (ev, boardEl) => {
+      const targetCard = ev.target?.closest?.(`.deck-card[data-index]`);
+      if (targetCard) {
+        const idx = Number(targetCard.getAttribute("data-index"));
+        if (Number.isFinite(idx)) {
+          const rect = targetCard.getBoundingClientRect();
           const mid = rect.top + rect.height / 2;
-          if (ev.clientY < mid) return idx;
+          return ev.clientY < mid ? idx : idx + 1;
         }
-        const lastIdx = Number(cards[cards.length - 1].getAttribute("data-index"));
-        return Number.isFinite(lastIdx) ? lastIdx + 1 : cards.length;
-      };
-      const computePosByX = (ev) => {
-        const rect = boardEl.getBoundingClientRect();
-        const x = ev.clientX;
-        const y = ev.clientY;
-        if (!(x >= rect.left && x <= rect.right)) return null;
-        const cards = Array.from(boardEl.querySelectorAll(`.deck-card[data-index]`));
-        const endPos = cards.length;
-        if (y < rect.top) return 0;
-        if (y > rect.bottom) return endPos;
-        return computePos(ev);
-      };
-      card.querySelectorAll(`.construction-choice.selectable[data-player="${playerId}"]`).forEach((el) => {
-        el.addEventListener("click", () => {
-          const nextIdx = Number(el.getAttribute("data-drawn-idx"));
-          if (!Number.isFinite(nextIdx)) return;
-          if (choice.insertIndex !== nextIdx) {
-            choice.insertIndex = nextIdx;
-            choice.insertPos = null;
-            choice.previewPos = null;
-            choice.dragging = false;
-          }
-          scheduleRender();
-        });
-      });
+      }
+      const cards = Array.from(boardEl.querySelectorAll(`.deck-card[data-index]`));
+      if (cards.length === 0) return 0;
+      for (const el of cards) {
+        const idx = Number(el.getAttribute("data-index"));
+        if (!Number.isFinite(idx)) continue;
+        const rect = el.getBoundingClientRect();
+        const mid = rect.top + rect.height / 2;
+        if (ev.clientY < mid) return idx;
+      }
+      const lastIdx = Number(cards[cards.length - 1].getAttribute("data-index"));
+      return Number.isFinite(lastIdx) ? lastIdx + 1 : cards.length;
+    };
 
+    const computePosByXForBoard = (ev, boardEl) => {
+      const rect = boardEl.getBoundingClientRect();
+      const x = ev.clientX;
+      const y = ev.clientY;
+      if (!(x >= rect.left && x <= rect.right)) return null;
+      const cards = Array.from(boardEl.querySelectorAll(`.deck-card[data-index]`));
+      const endPos = cards.length;
+      if (y < rect.top) return 0;
+      if (y > rect.bottom) return endPos;
+      return computePosForBoard(ev, boardEl);
+    };
+
+    // 辅助函数：放置动画
+    const animateDrop = (playerId, oldRect) => {
+      if (!oldRect) return;
       const dragSelector = `.insert-card[data-player="${playerId}"]`;
-      card.querySelectorAll(dragSelector).forEach((el) => {
-        el.addEventListener("dragstart", (ev) => {
-          ev.dataTransfer.setData("text/plain", `insert:${playerId}`);
-          ev.dataTransfer.effectAllowed = "move";
-          el.classList.add("dragging");
-          choice.dragging = true;
-          activeInsertDrag = playerId;
-          if (!choice._globalInsertDragHandlers) {
-            const computePosByXNow = (ev) => {
-              const boardNow = els.constructionPanel.querySelector(
-                `.construction-card[data-player="${playerId}"] .insert-board[data-player="${playerId}"]`
-              );
-              if (!boardNow) return { pos: null, reason: "no-board", rect: null };
-              const rect = boardNow.getBoundingClientRect();
-              const x = ev.clientX;
-              const y = ev.clientY;
-              const inX = x >= rect.left && x <= rect.right;
-              if (!inX) return { pos: null, reason: "x-out", rect, x, y };
-              const cards = Array.from(boardNow.querySelectorAll(`.deck-card[data-index]`));
-              const endPos = cards.length;
-              if (y < rect.top) return { pos: 0, reason: "above", rect, x, y, endPos };
-              if (y > rect.bottom) return { pos: endPos, reason: "below", rect, x, y, endPos };
-              if (cards.length === 0) return { pos: 0, reason: "empty", rect, x, y, endPos };
-              for (const el of cards) {
-                const idx = Number(el.getAttribute("data-index"));
-                if (!Number.isFinite(idx)) continue;
-                const r = el.getBoundingClientRect();
-                const mid = r.top + r.height / 2;
-                if (y < mid) return { pos: idx, reason: "mid", rect, x, y, endPos };
-              }
-              const lastIdx = Number(cards[cards.length - 1].getAttribute("data-index"));
-              const pos = Number.isFinite(lastIdx) ? lastIdx + 1 : endPos;
-              return { pos, reason: "after-last", rect, x, y, endPos };
-            };
-            const onOver = (e) => {
-              if (activeInsertDrag !== playerId) return;
-              const r = computePosByXNow(e);
-              if (r.pos == null) {
-                return;
-              }
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-              if (choice.previewPos !== r.pos) {
-                choice.previewPos = r.pos;
-                choice.dragging = true;
-                scheduleRender();
-              }
-            };
-            const onDrop = (e) => {
-              if (activeInsertDrag !== playerId) return;
-              const r = computePosByXNow(e);
-              if (r.pos == null) {
-                return;
-              }
-              e.preventDefault();
-              e.stopPropagation();
-              const oldEl = card.querySelector(dragSelector);
-              const oldRect = oldEl ? oldEl.getBoundingClientRect() : null;
-              choice.insertPos = r.pos;
-              choice.previewPos = null;
-              choice.dragging = false;
-              activeInsertDrag = null;
-              scheduleRender();
-              if (oldRect) {
-                const newEl = els.constructionPanel.querySelector(`.construction-card[data-player="${playerId}"] ${dragSelector}`);
-                if (newEl) {
-                  const newRect = newEl.getBoundingClientRect();
-                  const dx = oldRect.left - newRect.left;
-                  const dy = oldRect.top - newRect.top;
-                  newEl.style.transition = "transform 0s";
-                  newEl.style.transform = `translate(${dx}px, ${dy}px)`;
-                  requestAnimationFrame(() => {
-                    newEl.style.transition = "transform 160ms ease";
-                    newEl.style.transform = "translate(0px, 0px)";
-                  });
-                  const onEnd = () => {
-                    newEl.style.transition = "";
-                    newEl.style.transform = "";
-                    newEl.removeEventListener("transitionend", onEnd);
-                  };
-                  newEl.addEventListener("transitionend", onEnd);
-                }
-              }
-            };
-            choice._globalInsertDragHandlers = { onOver, onDrop };
-            document.addEventListener("dragover", onOver, true);
-            document.addEventListener("drop", onDrop, true);
-          }
-          choice.previewPos = Number.isFinite(choice.insertPos) ? choice.insertPos : 0;
-          scheduleRender();
+      const newEl = els.constructionPanel.querySelector(`.construction-card[data-player="${playerId}"] ${dragSelector}`);
+      if (newEl) {
+        const newRect = newEl.getBoundingClientRect();
+        const dx = oldRect.left - newRect.left;
+        const dy = oldRect.top - newRect.top;
+        newEl.style.transition = "transform 0s";
+        newEl.style.transform = `translate(${dx}px, ${dy}px)`;
+        requestAnimationFrame(() => {
+          newEl.style.transition = "transform 160ms ease";
+          newEl.style.transform = "translate(0px, 0px)";
         });
-        el.addEventListener("dragend", () => {
-          el.classList.remove("dragging");
-          choice.dragging = false;
-          choice.previewPos = null;
-          activeInsertDrag = null;
-          if (choice._globalInsertDragHandlers) {
-            document.removeEventListener("dragover", choice._globalInsertDragHandlers.onOver, true);
-            document.removeEventListener("drop", choice._globalInsertDragHandlers.onDrop, true);
-            choice._globalInsertDragHandlers = null;
-          }
-          scheduleRender();
-        });
-      });
+        const onEnd = () => {
+          newEl.style.transition = "";
+          newEl.style.transform = "";
+          newEl.removeEventListener("transitionend", onEnd);
+        };
+        newEl.addEventListener("transitionend", onEnd);
+      }
+    };
 
-      const zoneSelector = `.dropzone[data-player="${playerId}"]`;
-      card.querySelectorAll(zoneSelector).forEach((zone) => {
-        zone.addEventListener("dragover", (ev) => {
-          ev.preventDefault();
-          ev.dataTransfer.dropEffect = "move";
-          const pos = Number(zone.getAttribute("data-pos"));
-          if (!Number.isFinite(pos)) return;
-          if (choice.previewPos !== pos) {
-            choice.previewPos = pos;
-            choice.dragging = true;
-            scheduleRender();
-          }
-        });
-        zone.addEventListener("drop", (ev) => {
-          ev.preventDefault();
-          const raw = ev.dataTransfer.getData("text/plain");
-          if (raw !== `insert:${playerId}`) return;
-          const oldEl = card.querySelector(dragSelector);
-          const oldRect = oldEl ? oldEl.getBoundingClientRect() : null;
-          const pos = Number(zone.getAttribute("data-pos"));
-          if (!Number.isFinite(pos)) return;
-          choice.insertPos = pos;
+    // 事件委托：click 事件
+    els.constructionPanel.addEventListener("click", (ev) => {
+      // 选择框点击
+      const choiceEl = ev.target.closest(".construction-choice.selectable");
+      if (choiceEl) {
+        const playerId = choiceEl.getAttribute("data-player");
+        const choice = state.construction?.[playerId];
+        if (!choice || typeof choice !== "object") return;
+        const nextIdx = Number(choiceEl.getAttribute("data-drawn-idx"));
+        if (!Number.isFinite(nextIdx)) return;
+        if (choice.insertIndex !== nextIdx) {
+          choice.insertIndex = nextIdx;
+          choice.insertPos = null;
           choice.previewPos = null;
           choice.dragging = false;
-          scheduleRender();
-          if (oldRect) {
-            const newEl = els.constructionPanel.querySelector(`.construction-card[data-player="${playerId}"] ${dragSelector}`);
-            if (newEl) {
-              const newRect = newEl.getBoundingClientRect();
-              const dx = oldRect.left - newRect.left;
-              const dy = oldRect.top - newRect.top;
-              newEl.style.transition = "transform 0s";
-              newEl.style.transform = `translate(${dx}px, ${dy}px)`;
-              requestAnimationFrame(() => {
-                newEl.style.transition = "transform 160ms ease";
-                newEl.style.transform = "translate(0px, 0px)";
-              });
-              const onEnd = () => {
-                newEl.style.transition = "";
-                newEl.style.transform = "";
-                newEl.removeEventListener("transitionend", onEnd);
-              };
-              newEl.addEventListener("transitionend", onEnd);
-            }
-          }
-        });
-      });
-
-      boardEl.addEventListener(
-        "dragover",
-        (ev) => {
-          ev.preventDefault();
-          ev.dataTransfer.dropEffect = "move";
-          const raw = ev.dataTransfer.getData("text/plain");
-          if (raw !== `insert:${playerId}`) return;
-          const pos = computePos(ev);
-          if (choice.previewPos !== pos) {
-            choice.previewPos = pos;
-            choice.dragging = true;
-            scheduleRender();
-          }
-        },
-        true
-      );
-
-      const insertAreaEl = card.querySelector(`.insert-area`);
-      if (insertAreaEl) {
-        insertAreaEl.addEventListener(
-          "dragover",
-          (ev) => {
-            const raw = ev.dataTransfer.getData("text/plain");
-            if (raw !== `insert:${playerId}`) return;
-            const pos = computePosByX(ev);
-            if (pos == null) return;
-            ev.preventDefault();
-            ev.dataTransfer.dropEffect = "move";
-            if (choice.previewPos !== pos) {
-              choice.previewPos = pos;
-              choice.dragging = true;
-              scheduleRender();
-            }
-          },
-          true
-        );
-
-        insertAreaEl.addEventListener(
-          "drop",
-          (ev) => {
-            const raw = ev.dataTransfer.getData("text/plain");
-            if (raw !== `insert:${playerId}`) return;
-            const pos = computePosByX(ev);
-            if (pos == null) return;
-            ev.preventDefault();
-            ev.stopPropagation();
-            const oldEl = card.querySelector(dragSelector);
-            const oldRect = oldEl ? oldEl.getBoundingClientRect() : null;
-            choice.insertPos = pos;
-            choice.previewPos = null;
-            choice.dragging = false;
-            scheduleRender();
-            if (oldRect) {
-              const newEl = els.constructionPanel.querySelector(`.construction-card[data-player="${playerId}"] ${dragSelector}`);
-              if (newEl) {
-                const newRect = newEl.getBoundingClientRect();
-                const dx = oldRect.left - newRect.left;
-                const dy = oldRect.top - newRect.top;
-                newEl.style.transition = "transform 0s";
-                newEl.style.transform = `translate(${dx}px, ${dy}px)`;
-                requestAnimationFrame(() => {
-                  newEl.style.transition = "transform 160ms ease";
-                  newEl.style.transform = "translate(0px, 0px)";
-                });
-                const onEnd = () => {
-                  newEl.style.transition = "";
-                  newEl.style.transform = "";
-                  newEl.removeEventListener("transitionend", onEnd);
-                };
-                newEl.addEventListener("transitionend", onEnd);
-              }
-            }
-          },
-          true
-        );
+        }
+        scheduleRender();
+        return;
       }
 
-      boardEl.addEventListener(
-        "drop",
-        (ev) => {
-          ev.preventDefault();
-          const raw = ev.dataTransfer.getData("text/plain");
-          if (raw !== `insert:${playerId}`) return;
-          const oldEl = card.querySelector(dragSelector);
-          const oldRect = oldEl ? oldEl.getBoundingClientRect() : null;
-          const pos = Number.isFinite(choice.previewPos) ? choice.previewPos : computePos(ev);
-          choice.insertPos = pos;
-          choice.previewPos = null;
-          choice.dragging = false;
-          scheduleRender();
-          if (oldRect) {
-            const newEl = els.constructionPanel.querySelector(`.construction-card[data-player="${playerId}"] ${dragSelector}`);
-            if (newEl) {
-              const newRect = newEl.getBoundingClientRect();
-              const dx = oldRect.left - newRect.left;
-              const dy = oldRect.top - newRect.top;
-              newEl.style.transition = "transform 0s";
-              newEl.style.transform = `translate(${dx}px, ${dy}px)`;
-              requestAnimationFrame(() => {
-                newEl.style.transition = "transform 160ms ease";
-                newEl.style.transform = "translate(0px, 0px)";
-              });
-              const onEnd = () => {
-                newEl.style.transition = "";
-                newEl.style.transform = "";
-                newEl.removeEventListener("transitionend", onEnd);
-              };
-              newEl.addEventListener("transitionend", onEnd);
-            }
-          }
-        },
-        true
-      );
-
-      const outside = card.querySelector(`.insert-outside[data-player="${playerId}"]`);
-      outside.addEventListener("dragover", (ev) => {
-        ev.preventDefault();
-        outside.classList.add("active");
-        ev.dataTransfer.dropEffect = "move";
-        if (choice.previewPos !== null) {
-          choice.previewPos = null;
-          scheduleRender();
-        }
-      });
-      outside.addEventListener("dragleave", () => {
-        outside.classList.remove("active");
-      });
-      outside.addEventListener("drop", (ev) => {
-        ev.preventDefault();
-        outside.classList.remove("active");
-        const raw = ev.dataTransfer.getData("text/plain");
-        if (raw !== `insert:${playerId}`) return;
-        choice.insertPos = null;
-        choice.previewPos = null;
-        choice.dragging = false;
-        scheduleRender();
-      });
-
-      const orderEl = card.querySelector(`select[data-field="bottomOrder"]`);
-      orderEl.addEventListener("change", () => {
-        choice.bottomOrder = orderEl.value;
-        scheduleRender();
-      });
-      card.querySelector(`button[data-action="apply"]`).addEventListener("click", () => {
-        if (!Number.isFinite(choice.insertPos)) return;
+      // 确认按钮点击
+      const applyBtn = ev.target.closest('button[data-action="apply"]');
+      if (applyBtn) {
+        const playerId = applyBtn.getAttribute("data-player");
+        const choice = state.construction?.[playerId];
+        if (!choice || typeof choice !== "object" || !Number.isFinite(choice.insertPos)) return;
         wsSend({
           type: "CONSTRUCTION_CHOICE",
           data: {
@@ -2051,8 +1899,306 @@ function createApp() {
             bottomOrder: choice.bottomOrder || "01"
           }
         });
-      });
+        return;
+      }
     });
+
+    // 事件委托：change 事件
+    els.constructionPanel.addEventListener("change", (ev) => {
+      const orderEl = ev.target.closest('select[data-field="bottomOrder"]');
+      if (orderEl) {
+        const playerId = orderEl.getAttribute("data-player");
+        const choice = state.construction?.[playerId];
+        if (!choice || typeof choice !== "object") return;
+        choice.bottomOrder = orderEl.value;
+        scheduleRender();
+      }
+    });
+
+    // 事件委托：dragstart 事件
+    els.constructionPanel.addEventListener("dragstart", (ev) => {
+      const insertCard = ev.target.closest(".insert-card");
+      if (!insertCard) return;
+      const playerId = insertCard.getAttribute("data-player");
+      const choice = state.construction?.[playerId];
+      if (!choice || typeof choice !== "object") return;
+
+      ev.dataTransfer.setData("text/plain", `insert:${playerId}`);
+      ev.dataTransfer.effectAllowed = "move";
+      insertCard.classList.add("dragging");
+      choice.dragging = true;
+      choice._dropHandled = false; // 初始化 drop 处理标记
+      activeInsertDrag = playerId;
+
+      // 添加全局 dragover/drop 处理器
+      if (!choice._globalInsertDragHandlers) {
+        const computePosByXNow = (ev) => {
+          const boardNow = els.constructionPanel.querySelector(
+            `.construction-card[data-player="${playerId}"] .insert-board[data-player="${playerId}"]`
+          );
+          if (!boardNow) return { pos: null, reason: "no-board", rect: null };
+          const rect = boardNow.getBoundingClientRect();
+          const x = ev.clientX;
+          const y = ev.clientY;
+          const inX = x >= rect.left && x <= rect.right;
+          if (!inX) return { pos: null, reason: "x-out", rect, x, y };
+          const cards = Array.from(boardNow.querySelectorAll(`.deck-card[data-index]`));
+          const endPos = cards.length;
+          if (y < rect.top) return { pos: 0, reason: "above", rect, x, y, endPos };
+          if (y > rect.bottom) return { pos: endPos, reason: "below", rect, x, y, endPos };
+          if (cards.length === 0) return { pos: 0, reason: "empty", rect, x, y, endPos };
+          for (const el of cards) {
+            const idx = Number(el.getAttribute("data-index"));
+            if (!Number.isFinite(idx)) continue;
+            const r = el.getBoundingClientRect();
+            const mid = r.top + r.height / 2;
+            if (y < mid) return { pos: idx, reason: "mid", rect, x, y, endPos };
+          }
+          const lastIdx = Number(cards[cards.length - 1].getAttribute("data-index"));
+          const pos = Number.isFinite(lastIdx) ? lastIdx + 1 : endPos;
+          return { pos, reason: "after-last", rect, x, y, endPos };
+        };
+
+        const onOver = (e) => {
+          if (activeInsertDrag !== playerId) return;
+          const r = computePosByXNow(e);
+          if (r.pos == null) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (choice.previewPos !== r.pos) {
+            choice.previewPos = r.pos;
+            choice.dragging = true;
+            scheduleRender();
+          }
+        };
+
+        const onDrop = (e) => {
+          if (activeInsertDrag !== playerId) return;
+          const r = computePosByXNow(e);
+          if (r.pos == null) return;
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          
+          choice._dropHandled = true; // 标记 drop 已处理
+          const dragSelector = `.insert-card[data-player="${playerId}"]`;
+          const card = els.constructionPanel.querySelector(`.construction-card[data-player="${playerId}"]`);
+          const oldEl = card?.querySelector(dragSelector);
+          const oldRect = oldEl ? oldEl.getBoundingClientRect() : null;
+          
+          choice.insertPos = r.pos;
+          choice.previewPos = null;
+          choice.dragging = false;
+          activeInsertDrag = null;
+          scheduleRender();
+          animateDrop(playerId, oldRect);
+        };
+
+        choice._globalInsertDragHandlers = { onOver, onDrop };
+        document.addEventListener("dragover", onOver, true);
+        document.addEventListener("drop", onDrop, true);
+      }
+
+      choice.previewPos = Number.isFinite(choice.insertPos) ? choice.insertPos : 0;
+      scheduleRender();
+    });
+
+    // 事件委托：dragend 事件
+    els.constructionPanel.addEventListener("dragend", (ev) => {
+      const insertCard = ev.target.closest(".insert-card");
+      if (!insertCard) return;
+      const playerId = insertCard.getAttribute("data-player");
+      const choice = state.construction?.[playerId];
+      if (!choice || typeof choice !== "object") return;
+
+      insertCard.classList.remove("dragging");
+      choice.dragging = false;
+      choice.previewPos = null;
+      choice._dropHandled = false; // 清理 drop 处理标记
+      activeInsertDrag = null;
+
+      if (choice._globalInsertDragHandlers) {
+        document.removeEventListener("dragover", choice._globalInsertDragHandlers.onOver, true);
+        document.removeEventListener("drop", choice._globalInsertDragHandlers.onDrop, true);
+        choice._globalInsertDragHandlers = null;
+      }
+      scheduleRender();
+    });
+
+    // 事件委托：dragover 事件
+    els.constructionPanel.addEventListener("dragover", (ev) => {
+      // dropzone 的 dragover
+      const zone = ev.target.closest(".dropzone");
+      if (zone) {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = "move";
+        const playerId = zone.getAttribute("data-player");
+        const choice = state.construction?.[playerId];
+        if (!choice || typeof choice !== "object") return;
+        const pos = Number(zone.getAttribute("data-pos"));
+        if (!Number.isFinite(pos)) return;
+        if (choice.previewPos !== pos) {
+          choice.previewPos = pos;
+          choice.dragging = true;
+          scheduleRender();
+        }
+        return;
+      }
+
+      // insert-outside 的 dragover
+      const outside = ev.target.closest(".insert-outside");
+      if (outside) {
+        ev.preventDefault();
+        outside.classList.add("active");
+        ev.dataTransfer.dropEffect = "move";
+        const playerId = outside.getAttribute("data-player");
+        const choice = state.construction?.[playerId];
+        if (!choice || typeof choice !== "object") return;
+        if (choice.previewPos !== null) {
+          choice.previewPos = null;
+          scheduleRender();
+        }
+        return;
+      }
+
+      // insert-board 的 dragover
+      const boardEl = ev.target.closest(".insert-board");
+      if (boardEl) {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = "move";
+        const playerId = boardEl.getAttribute("data-player");
+        const choice = state.construction?.[playerId];
+        if (!choice || typeof choice !== "object") return;
+        const pos = computePosForBoard(ev, boardEl);
+        if (choice.previewPos !== pos) {
+          choice.previewPos = pos;
+          choice.dragging = true;
+          scheduleRender();
+        }
+        return;
+      }
+
+      // insert-area 的 dragover
+      const insertArea = ev.target.closest(".insert-area");
+      if (insertArea) {
+        const board = insertArea.querySelector(".insert-board");
+        if (!board) return;
+        const playerId = board.getAttribute("data-player");
+        const choice = state.construction?.[playerId];
+        if (!choice || typeof choice !== "object") return;
+        const pos = computePosByXForBoard(ev, board);
+        if (pos == null) return;
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = "move";
+        if (choice.previewPos !== pos) {
+          choice.previewPos = pos;
+          choice.dragging = true;
+          scheduleRender();
+        }
+      }
+    }, true);
+
+    // 事件委托：dragleave 事件
+    els.constructionPanel.addEventListener("dragleave", (ev) => {
+      const outside = ev.target.closest(".insert-outside");
+      if (outside) {
+        outside.classList.remove("active");
+      }
+    });
+
+    // 事件委托：drop 事件
+    els.constructionPanel.addEventListener("drop", (ev) => {
+      const raw = ev.dataTransfer.getData("text/plain");
+      if (!raw.startsWith("insert:")) return;
+      const playerId = raw.slice("insert:".length);
+      const choice = state.construction?.[playerId];
+      if (!choice || typeof choice !== "object") return;
+
+      // dropzone 的 drop
+      const zone = ev.target.closest(".dropzone");
+      if (zone && zone.getAttribute("data-player") === playerId) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation();
+        choice._dropHandled = true;
+        
+        const dragSelector = `.insert-card[data-player="${playerId}"]`;
+        const card = els.constructionPanel.querySelector(`.construction-card[data-player="${playerId}"]`);
+        const oldEl = card?.querySelector(dragSelector);
+        const oldRect = oldEl ? oldEl.getBoundingClientRect() : null;
+        
+        const pos = Number(zone.getAttribute("data-pos"));
+        if (!Number.isFinite(pos)) return;
+        choice.insertPos = pos;
+        choice.previewPos = null;
+        choice.dragging = false;
+        scheduleRender();
+        animateDrop(playerId, oldRect);
+        return;
+      }
+
+      // insert-board 的 drop
+      const boardEl = ev.target.closest(".insert-board");
+      if (boardEl && boardEl.getAttribute("data-player") === playerId) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation();
+        choice._dropHandled = true;
+        
+        const dragSelector = `.insert-card[data-player="${playerId}"]`;
+        const card = els.constructionPanel.querySelector(`.construction-card[data-player="${playerId}"]`);
+        const oldEl = card?.querySelector(dragSelector);
+        const oldRect = oldEl ? oldEl.getBoundingClientRect() : null;
+        
+        const pos = Number.isFinite(choice.previewPos) ? choice.previewPos : computePosForBoard(ev, boardEl);
+        choice.insertPos = pos;
+        choice.previewPos = null;
+        choice.dragging = false;
+        scheduleRender();
+        animateDrop(playerId, oldRect);
+        return;
+      }
+
+      // insert-area 的 drop
+      const insertArea = ev.target.closest(".insert-area");
+      if (insertArea) {
+        const board = insertArea.querySelector(".insert-board");
+        if (board && board.getAttribute("data-player") === playerId) {
+          const pos = computePosByXForBoard(ev, board);
+          if (pos == null) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          ev.stopImmediatePropagation();
+          choice._dropHandled = true;
+          
+          const dragSelector = `.insert-card[data-player="${playerId}"]`;
+          const card = els.constructionPanel.querySelector(`.construction-card[data-player="${playerId}"]`);
+          const oldEl = card?.querySelector(dragSelector);
+          const oldRect = oldEl ? oldEl.getBoundingClientRect() : null;
+          
+          choice.insertPos = pos;
+          choice.previewPos = null;
+          choice.dragging = false;
+          scheduleRender();
+          animateDrop(playerId, oldRect);
+          return;
+        }
+      }
+
+      // insert-outside 的 drop（拖回撤销）
+      const outside = ev.target.closest(".insert-outside");
+      if (outside && outside.getAttribute("data-player") === playerId) {
+        // 检查是否已被其他处理器处理
+        if (choice._dropHandled) return;
+        
+        ev.preventDefault();
+        outside.classList.remove("active");
+        choice.insertPos = null;
+        choice.previewPos = null;
+        choice.dragging = false;
+        scheduleRender();
+      }
+    }, true);
   }
 
   function renderControls() {
