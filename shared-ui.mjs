@@ -418,15 +418,19 @@ export function renderFighter(f, opts, ctx) {
       `
       : "";
   const planState = f?.plan;
-  const planBar =
-    f.name === "米莱狄" && planState
-      ? `
-        <div class="plan-wrap">
-          <div class="plan-label">计划</div>
-          <div class="plan-num">未${(planState.available ?? []).length} 已${(planState.ready ?? []).length} 弃${(planState.discard ?? []).length}</div>
-        </div>
-      `
-      : "";
+  const planTexts = f?.planTexts ?? [];
+  const planMiniHtml = planState && Array.isArray(planState.ready) && planState.ready.length > 0
+    ? `<div class="battle-card-plans">${planState.ready.map(no => {
+        const text = String(planTexts[no - 1] ?? "").trim();
+        return `<div class="plan-mini"><div class="plan-mini-title">计划#${no}</div><div class="plan-mini-body">${escapeHtml(text || "-")}</div></div>`;
+      }).join("")}</div>`
+    : "";
+  const planBar = f.name === "米莱狄" && planState
+    ? `<div class="plan-wrap">
+         <div class="plan-label">计划</div>
+         <div class="plan-num">未${(planState.available ?? []).length} 已${(planState.ready ?? []).length} 弃${(planState.discard ?? []).length}</div>
+       </div>${planMiniHtml}`
+    : "";
   const snakeFlipMark = f?.snakeFlipMark ?? null;
   const snakeSeq = (() => {
     const cur = (Number(f.snake) || 0) === 1 ? 1 : 0;
@@ -709,15 +713,19 @@ export function updateFighterDOM(el, f, opts, ctx) {
         `
         : "";
     const planState = f?.plan;
-    const planBar =
-      f.name === "米莱狄" && planState
-        ? `
-          <div class="plan-wrap">
-            <div class="plan-label">计划</div>
-            <div class="plan-num">未${(planState.available ?? []).length} 已${(planState.ready ?? []).length} 弃${(planState.discard ?? []).length}</div>
-          </div>
-        `
-        : "";
+    const planTexts = f?.planTexts ?? [];
+    const planMiniHtml = planState && Array.isArray(planState.ready) && planState.ready.length > 0
+      ? `<div class="battle-card-plans">${planState.ready.map(no => {
+          const text = String(planTexts[no - 1] ?? "").trim();
+          return `<div class="plan-mini"><div class="plan-mini-title">计划#${no}</div><div class="plan-mini-body">${escapeHtml(text || "-")}</div></div>`;
+        }).join("")}</div>`
+      : "";
+    const planBar = f.name === "米莱狄" && planState
+      ? `<div class="plan-wrap">
+           <div class="plan-label">计划</div>
+           <div class="plan-num">未${(planState.available ?? []).length} 已${(planState.ready ?? []).length} 弃${(planState.discard ?? []).length}</div>
+         </div>${planMiniHtml}`
+      : "";
     const snakeFlipMark = f?.snakeFlipMark ?? null;
     const snakeSeq = (() => {
       const cur = (Number(f.snake) || 0) === 1 ? 1 : 0;

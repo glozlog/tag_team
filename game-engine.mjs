@@ -917,9 +917,12 @@ export function compileCondition(condRaw) {
 
   if (s === "被攻击" || s === "自身被攻击" || s === "自身遭受攻击") {
     return (ctx, runtime) => {
+      // 优先检查米莱狄特殊标志（结算前预计算，最准确）
+      if (runtime && Object.prototype.hasOwnProperty.call(runtime, "miladyWasAttacked")) return runtime.miladyWasAttacked === true;
+      // 其次检查通用的被攻击标记
       const m = runtime?.wasAttackedByPlayerId;
       if (m && typeof m.get === "function") return m.get(ctx?.my?.playerId) === true;
-      if (runtime && Object.prototype.hasOwnProperty.call(runtime, "miladyWasAttacked")) return runtime.miladyWasAttacked === true;
+      // 最后降级到通用攻击标志
       return runtime?.oppAttacking === true;
     };
   }
@@ -2647,7 +2650,15 @@ export function applyDeltas(state, hpDelta, powerDelta, startSnapshot, guardAtSt
               }
             }
           };
-          const applyOne = (e) => applyOneWith(e, ctx, playerMap);
+          // HP 规则效果应用时，mainId 指向规则拥有者自身，而非当回合主攻
+          const hpRuleCtx = {
+            ...ctx,
+            my: {
+              ...ctx.my,
+              mainId: f.id,
+            }
+          };
+          const applyOne = (e) => applyOneWith(e, hpRuleCtx, playerMap);
           for (const e of hpRuleEffects) applyOne(e);
           for (const p of poisonQueue) {
             const targetId = p?.ctx?.opp?.mainId;
@@ -2720,6 +2731,9 @@ export function enterConstructionIfNeeded(state, pushLog) {
   state.construction.active = "p1";
   state.construction.p1 = null;
   state.construction.p2 = null;
+  state.lastFlip = null;
+  state.lastRound = null;
+  state.compareHold = false;
   pushLog(`战斗牌库结算完：翻面形成新战斗牌库，进入构筑阶段`);
   return true;
 }

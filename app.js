@@ -1866,6 +1866,11 @@ function createApp() {
     if (state.pendingElfPickByPlayer) {
       processElfRoundEnd("p1");
       processElfRoundEnd("p2");
+      // 如果有任何灵待选择，触发渲染并等待玩家操作
+      if (state.pendingElfPickByPlayer?.p1 || state.pendingElfPickByPlayer?.p2) {
+        scheduleRender();
+        return;
+      }
     }
 
     function isKoNow(fx) {

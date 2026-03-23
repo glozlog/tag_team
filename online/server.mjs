@@ -822,6 +822,9 @@ function handleGameMessage(room, playerId, msg) {
         room.gameState.turn = 1;
         room.gameState.enteredConstruction = { p1: false, p2: false };
         room.gameState.awaitingConstruction = false;
+        room.gameState.lastFlip = null;
+        room.gameState.lastRound = null;
+        room.gameState.compareHold = false;
         pushLog(`构筑完成，进入第 ${room.gameState.round} 轮战斗`);
         room.readyPlayers = new Set();
       }
