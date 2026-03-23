@@ -118,9 +118,34 @@ function createApp() {
     return m;
   }
 
-  // 包装 renderFighter，本地版不需要 elfPickHtml
+  // 包装 renderFighter，本地版需要 elfPickHtml 支持精灵族选灵
   function renderFighter(f, opts) {
-    return renderFighterBase(f, opts, { state, PHASE });
+    let elfPickHtml = "";
+    const pidForElf = String(f?.id ?? "").split(":")[0];
+    if (f.name === "精灵族" && f.elf && state.phase === PHASE.BATTLE && state.pendingElfPickByPlayer?.[pidForElf]) {
+      const spirits = Array.isArray(f.elf.spirits) ? f.elf.spirits : [];
+      const dead = Array.isArray(f.elf.dead) ? f.elf.dead : [false, false, false];
+      const soul = Math.max(0, Number(f?.elf?.soul) || 0);
+      const pendingKoIndex = Number.isFinite(f?.elf?.pendingKoIndex) ? Number(f.elf.pendingKoIndex) : null;
+      const buttons = [0, 1, 2]
+        .map((i) => {
+          const sp = spirits[i] ?? null;
+          const maxHp = Math.max(0, Number(sp?.maxHp) || 0);
+          const d = dead[i] === true || pendingKoIndex === i;
+          const colStart = 1 + i * 6;
+          return `<button type="button" class="elf-pick-btn${d ? " disabled" : ""}" data-elf-pick="${pidForElf}:${i}" ${
+            d ? "disabled" : ""
+          } style="grid-column:${colStart} / span 6"><div class="elf-pick-title">灵${i + 1}</div><div class="elf-pick-sub">血量${maxHp}</div></button>`;
+        })
+        .join("");
+      elfPickHtml = `
+        <div class="elf-pick-in-card">
+          <div class="elf-pick-hint">${pendingKoIndex != null ? "选择下一位灵" : "选择进入游戏的灵"}（魂=${soul}）</div>
+          <div class="elf-pick-row-grid" style="--hp-cells:30">${buttons}</div>
+        </div>
+      `;
+    }
+    return renderFighterBase(f, { ...opts, elfPickHtml }, { state, PHASE });
   }
 
 
@@ -1010,6 +1035,17 @@ function createApp() {
       `;
     }
 
+    // 返回 done 状态的内部 HTML（不包含外层 .construction-card div）
+    function renderDoneInner(playerId) {
+      return `<div><strong>${playerId.toUpperCase()}</strong> 构筑：已确认，等待另一方</div>`;
+    }
+
+    // 本地版 renderPanel 函数（简化版，不处理 pending/not_entered）
+    function renderPanel(pid, choice) {
+      if (choice && typeof choice === "object") return renderChoice(pid, choice);
+      return renderDone(pid);
+    }
+
     // 增量更新单个玩家的构筑面板
     function updateChoiceIncremental(card, playerId, choice) {
       const player = state.players[playerId];
@@ -1079,26 +1115,22 @@ function createApp() {
         const choice = state.construction[playerId];
         const isDoneCard = card.classList.contains("construction-done");
         
-        if (choice && isDoneCard) {
-          // 需要从 done 状态切换回 choice 状态 - 重建该卡片
+        if (choice && typeof choice === "object" && isDoneCard) {
+          // 需要从 done 状态切换回 choice 状态 - 更新内部 HTML
           const newHtml = renderChoice(playerId, choice);
           const temp = document.createElement("div");
           temp.innerHTML = newHtml;
           const newCard = temp.firstElementChild;
-          card.replaceWith(newCard);
+          // 保留 card 节点，只更新内部内容和类名
+          card.innerHTML = newCard.innerHTML;
+          card.className = newCard.className;
         } else if (!choice && !isDoneCard) {
-          // 需要从 choice 状态切换到 done 状态 - 重建该卡片
-          const newHtml = renderDone(playerId);
-          const temp = document.createElement("div");
-          temp.innerHTML = newHtml;
-          const newCard = temp.firstElementChild;
-          card.replaceWith(newCard);
+          // 需要从 choice 状态切换到 done 状态 - 更新内部 HTML
+          card.innerHTML = renderDoneInner(playerId);
+          card.classList.add("construction-done");
         } else if (choice && typeof choice === "object" && !isDoneCard) {
           // 正常增量更新
           updateChoiceIncremental(card, playerId, choice);
-        } else {
-          // 字符串状态 (pending/not_entered) 或其他，走重建路径
-          card.innerHTML = renderPanel(playerId, choice);
         }
         // 如果 !choice && isDoneCard，无需更新
       }

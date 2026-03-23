@@ -1679,6 +1679,16 @@ function createApp() {
       `;
     }
 
+    // 返回 done 状态的内部 HTML（不包含外层 .construction-card div）
+    function renderDoneInner(playerId) {
+      return `
+          <div><strong>${playerId.toUpperCase()}</strong> 构筑：已确认</div>
+          <div class="waiting-hint" style="margin-top: 16px; padding: 12px; background: rgba(91, 140, 255, 0.1); border-radius: 8px; text-align: center; color: #94a3b8;">
+            等待对方完成构筑....
+          </div>
+      `;
+    }
+
     function renderPending(playerId) {
       return `
         <div class="construction-card" data-player="${playerId}">
@@ -1771,26 +1781,30 @@ function createApp() {
         const choice = state.construction[playerId];
         const isDoneCard = card.classList.contains("construction-done");
         
-        if (choice && isDoneCard) {
-          // 需要从 done 状态切换回 choice 状态 - 重建该卡片
+        if (choice && typeof choice === "object" && isDoneCard) {
+          // 需要从 done 状态切换回 choice 状态 - 更新内部 HTML
           const newHtml = renderPanel(playerId, choice);
           const temp = document.createElement("div");
           temp.innerHTML = newHtml;
           const newCard = temp.firstElementChild;
-          card.replaceWith(newCard);
+          // 保留 card 节点，只更新内部内容和类名
+          card.innerHTML = newCard.innerHTML;
+          card.className = newCard.className;
         } else if (!choice && !isDoneCard) {
-          // 需要从 choice 状态切换到 done 状态 - 重建该卡片
-          const newHtml = renderDone(playerId);
-          const temp = document.createElement("div");
-          temp.innerHTML = newHtml;
-          const newCard = temp.firstElementChild;
-          card.replaceWith(newCard);
+          // 需要从 choice 状态切换到 done 状态 - 更新内部 HTML
+          card.innerHTML = renderDoneInner(playerId);
+          card.classList.add("construction-done");
         } else if (choice && typeof choice === "object" && !isDoneCard) {
           // 正常增量更新
           updateChoiceIncremental(card, playerId, choice);
-        } else {
-          // 字符串状态 (pending/not_entered) 或其他，走重建路径
-          card.innerHTML = renderPanel(playerId, choice);
+        } else if (typeof choice === "string" && !isDoneCard) {
+          // 字符串状态 (pending/not_entered)，更新内部 HTML
+          const newHtml = renderPanel(playerId, choice);
+          const temp = document.createElement("div");
+          temp.innerHTML = newHtml;
+          const newCard = temp.firstElementChild;
+          card.innerHTML = newCard.innerHTML;
+          card.className = newCard.className;
         }
         // 如果 !choice && isDoneCard，无需更新
       }
