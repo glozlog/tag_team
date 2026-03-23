@@ -16,6 +16,7 @@ import {
   checkWinner,
   enterConstructionIfNeeded,
   beginNextConstructionStep,
+  startConstructionForPlayer,
   applyConstructionChoice,
   formatCardLabel,
 } from "./game-engine.mjs";
@@ -233,9 +234,16 @@ function filterStateForPlayer(state, playerId) {
     } else {
       result[forPlayerId] = null;
     }
-    // 对方的构筑信息只发送是否已完成
+   // 对方的构筑状态：区分"未进入"和"进行中"和"已完成"
     const oppFor = forPlayerId === "p1" ? "p2" : "p1";
-    result[oppFor] = constr[oppFor] ? "pending" : null;
+    const ec = state.enteredConstruction || {};
+    if (constr[oppFor]) {
+      result[oppFor] = "pending"; // 对方正在构筑中
+    } else if (ec[oppFor]) {
+      result[oppFor] = null; // 对方已进入并完成
+    } else {
+      result[oppFor] = "not_entered"; // 对方尚未进入构筑
+    }
     return result;
   }
 
@@ -253,12 +261,17 @@ function filterStateForPlayer(state, playerId) {
     };
   }
 
+  // 独立构筑：如果该玩家还没进入构筑，覆写为 BATTLE + awaitingConstruction
+  const ec = state.enteredConstruction || {};
+  const playerPhase = (state.phase === PHASE.CONSTRUCTION && !ec[playerId]) ? PHASE.BATTLE : state.phase;
+  const playerAwaiting = (state.phase === PHASE.CONSTRUCTION && !ec[playerId]) ? true : state.awaitingConstruction;
+
   return {
-    phase: state.phase,
+    phase: playerPhase,
     round: state.round,
     turn: state.turn,
     showDecks: state.showDecks,
-    awaitingConstruction: state.awaitingConstruction,
+    awaitingConstruction: playerAwaiting,
     pendingGameOver: state.pendingGameOver,
     pendingElfPickByPlayer: state.pendingElfPickByPlayer ? { ...state.pendingElfPickByPlayer } : null,
     doubleNextByPlayer: state.doubleNextByPlayer ? { ...state.doubleNextByPlayer } : null,
@@ -743,22 +756,35 @@ function handleGameMessage(room, playerId, msg) {
     }
 
     case "ENTER_CONSTRUCTION": {
-      if (!room.gameState || room.gameState.phase !== PHASE.BATTLE) {
-        send(room[playerId]?.ws, { type: "ERROR", error: "当前不在战斗阶段" });
-        return;
-      }
-      if (!room.gameState.awaitingConstruction) {
+      if (!room.gameState) return;
+      const st = room.gameState;
+      // 允许在 BATTLE+awaitingConstruction 或已进入构筑但该玩家尚未进入的情况
+      if (st.phase === PHASE.BATTLE && !st.awaitingConstruction) {
         send(room[playerId]?.ws, { type: "ERROR", error: "还未到进入构筑的时机" });
         return;
       }
+      if (!st.enteredConstruction) st.enteredConstruction = { p1: false, p2: false };
+      if (st.enteredConstruction[playerId]) {
+        send(room[playerId]?.ws, { type: "ERROR", error: "你已进入构筑" });
+        return;
+      }
 
-      // 异步构筑：任意一方请求即可进入构筑阶段
-      pushLog(`${playerId.toUpperCase()} 请求进入构筑，立即进入构筑阶段`);
-      
-      const entered = enterConstructionIfNeeded(room.gameState, pushLog);
-      room.gameState.awaitingConstruction = false;
-      if (entered) {
-        beginNextConstructionStep(room.gameState, pushLog);
+      st.enteredConstruction[playerId] = true;
+      const oppId = playerId === "p1" ? "p2" : "p1";
+
+      // 第一个进入的玩家：执行全局初始化（翻转牌库等）
+      if (!st.enteredConstruction[oppId]) {
+        enterConstructionIfNeeded(st, pushLog);
+        // phase 已被设为 CONSTRUCTION，但通过 filterStateForPlayer 控制对方仍看到 BATTLE
+      }
+
+      // 为该玩家初始化构筑数据
+      startConstructionForPlayer(st, playerId);
+      pushLog(`${playerId.toUpperCase()} 进入构筑`);
+
+      // 双方都进入后清除 awaitingConstruction
+      if (st.enteredConstruction.p1 && st.enteredConstruction.p2) {
+        st.awaitingConstruction = false;
       }
       broadcastState(room, logs);
       break;
@@ -796,11 +822,16 @@ function handleGameMessage(room, playerId, msg) {
         return;
       }
 
-      // 检查双方是否都完成构筑
-      if (!room.gameState.construction.p1 && !room.gameState.construction.p2) {
+      // 检查双方是否都完成构筑（必须双方都已进入且都已完成）
+      const ecCheck = room.gameState.enteredConstruction || {};
+      const bothEntered = ecCheck.p1 && ecCheck.p2;
+      const bothDone = !room.gameState.construction.p1 && !room.gameState.construction.p2;
+      if (bothEntered && bothDone) {
         room.gameState.phase = PHASE.BATTLE;
         room.gameState.round += 1;
         room.gameState.turn = 1;
+        room.gameState.enteredConstruction = { p1: false, p2: false };
+        room.gameState.awaitingConstruction = false;
         pushLog(`构筑完成，进入第 ${room.gameState.round} 轮战斗`);
         room.readyPlayers = new Set();
       }

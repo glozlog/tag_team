@@ -28,6 +28,7 @@ import {
   renderPowerGrid,
   renderFighter as renderFighterBase,
   positionHpArrows,
+  updateFighterDOM,
 } from '../shared-ui.mjs';
 
 function createApp() {
@@ -638,8 +639,45 @@ function createApp() {
 
     const leftMain = state.phase === PHASE.BATTLE && state.lastFlip ? state.lastFlip[`${leftId}Card`]?.fighterName : null;
     const rightMain = state.phase === PHASE.BATTLE && state.lastFlip ? state.lastFlip[`${rightId}Card`]?.fighterName : null;
-    els.p1Fighters.innerHTML = leftPlayer.fighters.map((f) => renderFighter(f, { isMain: leftMain === f.name })).join("");
-    els.p2Fighters.innerHTML = rightPlayer.fighters.map((f) => renderFighter(f, { isMain: rightMain === f.name })).join("");
+    
+    // 方案A+C： DOM 复用 - 只更新动态部分，保持头像不变
+    const updateOrCreateFighters = (container, fighters, mainName) => {
+      const existingEls = new Map();
+      container.querySelectorAll(".fighter[data-fighter-id]").forEach((el) => {
+        existingEls.set(el.getAttribute("data-fighter-id"), el);
+      });
+      const currentIds = new Set(fighters.map((f) => f.id));
+      // 移除不再存在的战士
+      for (const [id, el] of existingEls) {
+        if (!currentIds.has(id)) el.remove();
+      }
+      // 更新或创建战士
+      fighters.forEach((f, idx) => {
+        const existingEl = existingEls.get(f.id);
+        const opts = { isMain: mainName === f.name };
+        if (existingEl) {
+          // 已存在：增量更新（保持头像不变）
+          updateFighterDOM(existingEl, f, opts, { state, PHASE });
+          // 确保顺序正确
+          if (container.children[idx] !== existingEl) {
+            container.insertBefore(existingEl, container.children[idx]);
+          }
+        } else {
+          // 不存在：创建新元素
+          const html = renderFighter(f, opts);
+          const temp = document.createElement("div");
+          temp.innerHTML = html;
+          const newEl = temp.firstElementChild;
+          if (container.children[idx]) {
+            container.insertBefore(newEl, container.children[idx]);
+          } else {
+            container.appendChild(newEl);
+          }
+        }
+      });
+    };
+    updateOrCreateFighters(els.p1Fighters, leftPlayer.fighters, leftMain);
+    updateOrCreateFighters(els.p2Fighters, rightPlayer.fighters, rightMain);
     document.querySelectorAll(`[data-elf-pick]`).forEach((btn) => {
       btn.addEventListener("click", () => {
         const raw = btn.getAttribute("data-elf-pick") || "";
@@ -1539,9 +1577,24 @@ function createApp() {
       `;
     }
 
+    function renderNotEntered(playerId) {
+      return `
+        <div class="construction-card" data-player="${playerId}">
+          <div style="padding: 12px; color: #64748b; text-align: center;">对手尚未进入构筑</div>
+        </div>
+      `;
+    }
+
+    function renderPanel(pid, choice) {
+      if (choice && typeof choice === "object") return renderChoice(pid, choice);
+      if (choice === "pending") return renderPending(pid);
+      if (choice === "not_entered") return renderNotEntered(pid);
+      return renderDone(pid);
+    }
+
     const panels = [];
-    panels.push(p1Choice && typeof p1Choice === "object" ? renderChoice("p1", p1Choice) : p1Choice === "pending" ? renderPending("p1") : renderDone("p1"));
-    panels.push(p2Choice && typeof p2Choice === "object" ? renderChoice("p2", p2Choice) : p2Choice === "pending" ? renderPending("p2") : renderDone("p2"));
+    panels.push(renderPanel("p1", p1Choice));
+    panels.push(renderPanel("p2", p2Choice));
     els.constructionPanel.innerHTML = panels.join("");
 
     els.constructionPanel.querySelectorAll(".construction-card").forEach((card) => {
