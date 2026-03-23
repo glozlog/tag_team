@@ -292,6 +292,60 @@ export function renderPowerGrid(f, overlay) {
 }
 
 /**
+ * 计算战士状态标记（内部辅助函数）
+ * @param {Object} f - 战士对象
+ * @param {Object} state - 游戏状态
+ * @param {Object} PHASE - 阶段常量
+ * @returns {Object} 包含所有标记计算结果的对象
+ */
+function computeFighterMarks(f, state, PHASE) {
+  // 火焰计算
+  const flameTotal = (() => {
+    const v = f?.flame;
+    if (!v || typeof v !== "object") return 0;
+    let sum = 0;
+    for (const x of Object.values(v)) sum += Number(x) || 0;
+    return Math.max(0, Math.min(5, sum));
+  })();
+
+  // 凝滞计算
+  const ningTotal = (() => {
+    const v = f?.ning;
+    if (!v || typeof v !== "object") return 0;
+    let sum = 0;
+    for (const x of Object.values(v)) sum += Number(x) || 0;
+    return Math.max(0, Math.min(2, sum));
+  })();
+
+  // 警标记
+  const policeMark = f.police === true;
+
+  // 守卫标记
+  const guardMark = f.guard === true;
+
+  // 魔像抵挡标记
+  const pidForMark = String(f?.id ?? "").split(":")[0];
+  const golemBlockMark =
+    f?.name === "魔像" &&
+    state?.phase === PHASE.BATTLE &&
+    state?.lastRound?.round === state?.round &&
+    state?.lastRound?.turn === state?.turn &&
+    state?.lastRound?.guardBlockedByPlayerId?.has?.(pidForMark) === true;
+
+  // 魂（精灵族专用）
+  const soulVal = f.name === "精灵族" ? Math.max(0, Number(f?.elf?.soul) || 0) : 0;
+
+  return {
+    flameTotal,
+    ningTotal,
+    policeMark,
+    guardMark,
+    golemBlockMark,
+    soulVal,
+  };
+}
+
+/**
  * 渲染战士卡片
  * @param {Object} f - 战士对象
  * @param {Object} opts - 选项 { isMain: boolean, elfPickHtml: string }
@@ -310,33 +364,12 @@ export function renderFighter(f, opts, ctx) {
     return Number(fx.hp) <= Number(fx.koLine);
   }
   const isKo = isKoNow(f);
-  const policeMark = f.police === true ? `<div class="police-mark">警</div>` : "";
-  const flameTotal = (() => {
-    const v = f?.flame;
-    if (!v || typeof v !== "object") return 0;
-    let sum = 0;
-    for (const x of Object.values(v)) sum += Number(x) || 0;
-    return Math.max(0, Math.min(5, sum));
-  })();
-  const flameMark = flameTotal > 0 ? `<div class="flame-mark">焰${flameTotal}</div>` : "";
-  const ningTotal = (() => {
-    const v = f?.ning;
-    if (!v || typeof v !== "object") return 0;
-    let sum = 0;
-    for (const x of Object.values(v)) sum += Number(x) || 0;
-    return Math.max(0, Math.min(2, sum));
-  })();
-  const ningMark = ningTotal > 0 ? `<div class="ning-mark">凝${ningTotal}</div>` : "";
-  const guardMark = f.guard === true ? `<div class="guard-mark">护</div>` : "";
-  const pidForMark = String(f?.id ?? "").split(":")[0];
-  const golemBlockMark =
-    f?.name === "魔像" &&
-    state?.phase === PHASE.BATTLE &&
-    state?.lastRound?.round === state?.round &&
-    state?.lastRound?.turn === state?.turn &&
-    state?.lastRound?.guardBlockedByPlayerId?.has?.(pidForMark) === true
-      ? `<div class="golem-block-mark">魔像抵挡！</div>`
-      : "";
+  const marks = computeFighterMarks(f, state, PHASE);
+  const policeMark = marks.policeMark ? `<div class="police-mark">警</div>` : "";
+  const flameMark = marks.flameTotal > 0 ? `<div class="flame-mark">焰${marks.flameTotal}</div>` : "";
+  const ningMark = marks.ningTotal > 0 ? `<div class="ning-mark">凝${marks.ningTotal}</div>` : "";
+  const guardMark = marks.guardMark ? `<div class="guard-mark">护</div>` : "";
+  const golemBlockMark = marks.golemBlockMark ? `<div class="golem-block-mark">魔像抵挡！</div>` : "";
   const headshot = headshotImgHtml(f.name, "fighter-headshot");
   const rev = Math.max(0, Math.min(4, Number(f.revelation) || 0));
   const revBar =
@@ -420,7 +453,7 @@ export function renderFighter(f, opts, ctx) {
   const shownPower = base ? base.power : f.power;
   const pText = `${shownPower}`;
   const soulMark =
-    f.name === "精灵族" ? `<div class="soul-mark">魂${Math.max(0, Number(f?.elf?.soul) || 0)}</div>` : "";
+    f.name === "精灵族" ? `<div class="soul-mark">魂${marks.soulVal}</div>` : "";
 
   let powerDeltaHtml = "";
   let powerOverlay = null;
@@ -547,35 +580,14 @@ export function updateFighterDOM(el, f, opts, ctx) {
   el.classList.toggle("fighter-main", isMain);
 
   // 更新状态标记区域
+  const marks = computeFighterMarks(f, state, PHASE);
   const marksContainer = el.querySelector(".fighter-marks");
   if (marksContainer) {
-    const policeMark = f.police === true ? `<div class="police-mark">警</div>` : "";
-    const flameTotal = (() => {
-      const v = f?.flame;
-      if (!v || typeof v !== "object") return 0;
-      let sum = 0;
-      for (const x of Object.values(v)) sum += Number(x) || 0;
-      return Math.max(0, Math.min(5, sum));
-    })();
-    const flameMark = flameTotal > 0 ? `<div class="flame-mark">焰${flameTotal}</div>` : "";
-    const ningTotal = (() => {
-      const v = f?.ning;
-      if (!v || typeof v !== "object") return 0;
-      let sum = 0;
-      for (const x of Object.values(v)) sum += Number(x) || 0;
-      return Math.max(0, Math.min(2, sum));
-    })();
-    const ningMark = ningTotal > 0 ? `<div class="ning-mark">凝${ningTotal}</div>` : "";
-    const guardMark = f.guard === true ? `<div class="guard-mark">护</div>` : "";
-    const pidForMark = String(f?.id ?? "").split(":")[0];
-    const golemBlockMark =
-      f?.name === "魔像" &&
-      state?.phase === PHASE.BATTLE &&
-      state?.lastRound?.round === state?.round &&
-      state?.lastRound?.turn === state?.turn &&
-      state?.lastRound?.guardBlockedByPlayerId?.has?.(pidForMark) === true
-        ? `<div class="golem-block-mark">魔像抵挡！</div>`
-        : "";
+    const policeMark = marks.policeMark ? `<div class="police-mark">警</div>` : "";
+    const flameMark = marks.flameTotal > 0 ? `<div class="flame-mark">焰${marks.flameTotal}</div>` : "";
+    const ningMark = marks.ningTotal > 0 ? `<div class="ning-mark">凝${marks.ningTotal}</div>` : "";
+    const guardMark = marks.guardMark ? `<div class="guard-mark">护</div>` : "";
+    const golemBlockMark = marks.golemBlockMark ? `<div class="golem-block-mark">魔像抵挡！</div>` : "";
     marksContainer.innerHTML = policeMark + flameMark + ningMark + guardMark + golemBlockMark;
   }
 
@@ -585,13 +597,12 @@ export function updateFighterDOM(el, f, opts, ctx) {
     // 更新魂标记
     let soulMarkEl = topContainer.querySelector(".soul-mark");
     if (f.name === "精灵族") {
-      const soulVal = Math.max(0, Number(f?.elf?.soul) || 0);
       if (soulMarkEl) {
-        soulMarkEl.textContent = `魂${soulVal}`;
+        soulMarkEl.textContent = `魂${marks.soulVal}`;
       } else {
         const nameEl = topContainer.querySelector(".fighter-name");
         if (nameEl) {
-          nameEl.insertAdjacentHTML("afterend", `<div class="soul-mark">魂${soulVal}</div>`);
+          nameEl.insertAdjacentHTML("afterend", `<div class="soul-mark">魂${marks.soulVal}</div>`);
         }
       }
     } else if (soulMarkEl) {
@@ -729,4 +740,21 @@ export function updateFighterDOM(el, f, opts, ctx) {
 
     dynamicContainer.innerHTML = hpHtml + powerHtml + elfPickHtml + revBar + shipBar + rageBar + planBar + snakeBar;
   }
+}
+
+/**
+ * 渲染牌库列表
+ * @param {string} title - 标题
+ * @param {Array} cards - 卡牌数组
+ * @param {Object} state - 游戏状态
+ * @param {Object} PHASE - 阶段常量
+ */
+export function renderDeckList(title, cards, state, PHASE) {
+  const lines = cards
+    .map((c, idx) => `${String(idx + 1).padStart(2, "0")}. ${cardLabel(c)}  ${displayCardText(c, state, PHASE)}`)
+    .join("\n");
+  return `
+    <div class="deck-title">${title}</div>
+    <div class="deck-list">${lines || "-"}</div>
+  `;
 }

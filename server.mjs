@@ -66,9 +66,10 @@ const server = http.createServer(async (req, res) => {
 
     const data = await readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
+    const isImage = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"].includes(ext);
     res.writeHead(200, {
       "Content-Type": guessContentType(filePath),
-      "Cache-Control": "no-store",
+      "Cache-Control": isImage ? "public, max-age=86400" : "no-store",
     });
     if (ext === ".txt") {
       res.end(decodeTxtToUtf8(data));

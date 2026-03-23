@@ -30,6 +30,7 @@ import {
   renderFighter as renderFighterBase,
   positionHpArrows,
   updateFighterDOM,
+  renderDeckList as renderDeckListBase,
 } from './shared-ui.mjs';
 
 function createApp() {
@@ -123,14 +124,9 @@ function createApp() {
   }
 
 
+  // 包装 renderDeckList，封装闭包依赖
   function renderDeckList(title, cards) {
-    const lines = cards
-      .map((c, idx) => `${String(idx + 1).padStart(2, "0")}. ${cardLabel(c)}  ${displayCardText(c)}`)
-      .join("\n");
-    return `
-      <div class="deck-title">${title}</div>
-      <div class="deck-list">${lines || "-"}</div>
-    `;
+    return renderDeckListBase(title, cards, state, PHASE);
   }
 
   function syncRevelationSizing() {
@@ -207,74 +203,7 @@ function createApp() {
     };
     updateOrCreateFighters(els.p1Fighters, p1.fighters, p1Main);
     updateOrCreateFighters(els.p2Fighters, p2.fighters, p2Main);
-    document.querySelectorAll(`[data-elf-pick]`).forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const raw = btn.getAttribute("data-elf-pick") || "";
-        const [pid, idxStr] = raw.split(":");
-        const idx = Number(idxStr);
-        const player = state.players?.[pid];
-        const oppId = pid === "p1" ? "p2" : "p1";
-        const elf = player?.fighters?.find?.((x) => x?.name === "精灵族");
-        if (!elf || !elf.elf) return;
-        const dead = Array.isArray(elf.elf.dead) ? elf.elf.dead : [false, false, false];
-        if (!Number.isFinite(idx) || idx < 0 || idx > 2) return;
-        const pendingKoIndex = Number.isFinite(elf.elf.pendingKoIndex) ? Number(elf.elf.pendingKoIndex) : null;
-        if (dead[idx] === true) return;
-        if (pendingKoIndex === idx) return;
-        const wasKoPick = pendingKoIndex != null;
-        if (pendingKoIndex != null) {
-          dead[pendingKoIndex] = true;
-          elf.elf.pendingKoIndex = null;
-        }
-        const spirit = elf.elf.spirits?.[idx];
-        const maxHp = Number(spirit?.maxHp) || 0;
-        if (maxHp <= 0) return;
-        elf.elf.dead = dead;
-        elf.elf.active = idx;
-        elf.elf.pendingPick = false;
-        elf.hp = maxHp;
-        elf.maxHp = maxHp;
-        elf.hpRules = Array.isArray(spirit?.hpRules) ? spirit.hpRules : [];
-        state.pendingElfPickByPlayer[pid] = false;
-        pushLog(`灵：${pid.toUpperCase()} 选择灵${idx + 1}（HP=${maxHp}，魂=${Number(elf.elf.soul) || 0}）`);
-        const enterEffects = (elf.hpRules ?? []).filter((r) => r?.hp === elf.hp && r.stop !== true).flatMap((r) => r.effects ?? []);
-        if (enterEffects.length) {
-          const other = player.fighters.find((x) => x.id !== elf.id);
-          const opp = state.players[oppId];
-          const oppMain = opp?.fighters?.[0];
-          const oppSup = opp?.fighters?.[1];
-          const startPower = new Map();
-          for (const f of [...player.fighters, ...opp.fighters]) startPower.set(f.id, Number(f.power) || 0);
-          const ctx = {
-            kind: "battle",
-            my: { playerId: pid, mainId: elf.id, supportId: other?.id, bothIds: [elf.id, other?.id].filter(Boolean) },
-            opp: { playerId: oppId, mainId: oppMain?.id, supportId: oppSup?.id, bothIds: [oppMain?.id, oppSup?.id].filter(Boolean) },
-            startPower,
-          };
-          const settlement = settleEffects({
-            ctx,
-            myCard: { fighterName: "精灵族", text: "", id: "elf-enter" },
-            oppCard: { fighterName: "对手", text: "", id: "elf-enter-opp" },
-            myEffects: enterEffects,
-            oppEffects: [],
-            myPlayer: player,
-            oppPlayer: opp,
-          });
-          const beforeSnapshot = snapshotFighters();
-          applyDeltas(state, settlement.hpDelta, settlement.powerDelta, beforeSnapshot, null, null, null);
-        }
-        if (wasKoPick) {
-          state.lastRound = null;
-          state.lastIntermissionEffect = null;
-          state.compareHold = false;
-          state.lastFlip = null;
-          scheduleRender();
-          battleTurn();
-          return;
-        }
-        scheduleRender();
-      });
-    });
+    // 注意：elf-pick 事件已改为事件委托，在 createApp 初始化时绑定一次
 
     els.p1BattleCount.textContent = `战斗牌库: ${p1.battleDeck.length}`;
     els.p1ConstructCount.textContent = `构筑牌库: ${p1.constructionDeck.length}`;
@@ -415,8 +344,13 @@ function createApp() {
     return html;
   }
 
-  // Pick阶段渲染
+  // Pick阶段渲染 - DOM复用版本
   function renderConstructionPick(setup, pool, names) {
+    const pickedByP1 = new Set([setup.p1a, setup.p1b].filter(Boolean));
+    const pickedByP2 = new Set([setup.p2a, setup.p2b].filter(Boolean));
+    const gridNames = names.slice(0, 12);
+    
+    // 辅助函数：生成槽位内部 HTML
     const slotLabel = (v, fallback) =>
       v
         ? `<div class="setup-picked" draggable="true" data-setup-pick="picked" data-name="${escapeHtml(v)}">${headshotImgHtml(
@@ -424,10 +358,61 @@ function createApp() {
             "setup-headshot"
           )}<div class="setup-fighter-name">${escapeHtml(v)}</div></div>`
         : `<div class="setup-slot-placeholder">${fallback}</div>`;
-
-    const pickedByP1 = new Set([setup.p1a, setup.p1b].filter(Boolean));
-    const pickedByP2 = new Set([setup.p2a, setup.p2b].filter(Boolean));
-    const gridNames = names.slice(0, 12);
+    
+    // 检测是否已渲染过 pick 阶段 DOM（用于 DOM 复用）
+    const existingCard = els.constructionPanel.querySelector('[data-pick-rendered="true"]');
+    
+    if (existingCard) {
+      // === 增量更新模式 ===
+      // 更新 4 个槽位
+      const slots = [
+        { player: "p1", slot: "a", value: setup.p1a, fallback: "空槽1" },
+        { player: "p1", slot: "b", value: setup.p1b, fallback: "空槽2" },
+        { player: "p2", slot: "a", value: setup.p2a, fallback: "空槽1" },
+        { player: "p2", slot: "b", value: setup.p2b, fallback: "空槽2" },
+      ];
+      for (const { player, slot, value, fallback } of slots) {
+        const slotEl = existingCard.querySelector(`[data-setup-pick="slot"][data-player="${player}"][data-slot="${slot}"]`);
+        if (slotEl) {
+          const currentName = slotEl.getAttribute("data-current-fighter") || "";
+          if (currentName !== (value || "")) {
+            slotEl.innerHTML = slotLabel(value, fallback);
+            slotEl.setAttribute("data-current-fighter", value || "");
+          }
+        }
+      }
+      
+      // 更新 12 个池子格子（只更新状态，不重建 img）
+      for (let i = 0; i < 12; i++) {
+        const n = gridNames[i] ?? null;
+        if (!n) continue;
+        const fighterEl = existingCard.querySelector(`[data-setup-pick="fighter"][data-name="${CSS.escape(n)}"]`);
+        if (!fighterEl) continue;
+        
+        const takenBy = pickedByP1.has(n) ? "p1" : pickedByP2.has(n) ? "p2" : null;
+        const disabled = takenBy != null;
+        const title = takenBy === "p1" ? "已被P1选择" : takenBy === "p2" ? "已被P2选择" : "";
+        
+        // 更新 disabled 状态
+        if (disabled) {
+          fighterEl.classList.add("disabled");
+          fighterEl.setAttribute("draggable", "false");
+        } else {
+          fighterEl.classList.remove("disabled");
+          fighterEl.setAttribute("draggable", "true");
+        }
+        fighterEl.title = title;
+      }
+      
+      // 更新确认按钮状态
+      const confirmBtn = document.getElementById("setup-confirm");
+      if (confirmBtn) {
+        confirmBtn.disabled = !(setup.p1a && setup.p1b && setup.p2a && setup.p2b);
+      }
+      return; // 增量更新完成，直接返回
+    }
+    
+    // === 首次渲染模式 ===
     const poolCells = [];
     for (let i = 0; i < 12; i++) {
       const n = gridNames[i] ?? null;
@@ -449,14 +434,14 @@ function createApp() {
     }
 
     els.constructionPanel.innerHTML = `
-      <div class="construction-card">
+      <div class="construction-card" data-pick-rendered="true">
         <div><strong>初始化</strong>：拖拽选择双方各 2 位战士</div>
         <div class="setup-pick-grid">
           <div class="setup-side" data-player="p1">
             <div class="setup-side-title"><strong>P1</strong></div>
             <div class="setup-slots">
-              <div class="setup-slot" data-setup-pick="slot" data-player="p1" data-slot="a">${slotLabel(setup.p1a, "空槽1")}</div>
-              <div class="setup-slot" data-setup-pick="slot" data-player="p1" data-slot="b">${slotLabel(setup.p1b, "空槽2")}</div>
+              <div class="setup-slot" data-setup-pick="slot" data-player="p1" data-slot="a" data-current-fighter="${escapeHtml(setup.p1a || '')}">${slotLabel(setup.p1a, "空槽1")}</div>
+              <div class="setup-slot" data-setup-pick="slot" data-player="p1" data-slot="b" data-current-fighter="${escapeHtml(setup.p1b || '')}">${slotLabel(setup.p1b, "空槽2")}</div>
             </div>
           </div>
           <div class="setup-pool setup-pool-grid" data-player="pool">
@@ -465,8 +450,8 @@ function createApp() {
           <div class="setup-side" data-player="p2">
             <div class="setup-side-title"><strong>P2</strong></div>
             <div class="setup-slots">
-              <div class="setup-slot" data-setup-pick="slot" data-player="p2" data-slot="a">${slotLabel(setup.p2a, "空槽1")}</div>
-              <div class="setup-slot" data-setup-pick="slot" data-player="p2" data-slot="b">${slotLabel(setup.p2b, "空槽2")}</div>
+              <div class="setup-slot" data-setup-pick="slot" data-player="p2" data-slot="a" data-current-fighter="${escapeHtml(setup.p2a || '')}">${slotLabel(setup.p2a, "空槽1")}</div>
+              <div class="setup-slot" data-setup-pick="slot" data-player="p2" data-slot="b" data-current-fighter="${escapeHtml(setup.p2b || '')}">${slotLabel(setup.p2b, "空槽2")}</div>
             </div>
           </div>
         </div>
@@ -1434,6 +1419,42 @@ function createApp() {
     if (state.phase !== PHASE.BATTLE) return;
     if (state.awaitingConstruction) return;
     if (state.pendingGameOver) return;
+
+    const processElfRoundEnd = (playerId) => {
+      const player = state.players[playerId];
+      const elf = player?.fighters?.find?.((f) => f?.name === "精灵族");
+      if (!elf || !elf.elf) return;
+      if (elf.elf.gameKo === true) return;
+      const active = elf.elf.active;
+      const dead = Array.isArray(elf.elf.dead) ? elf.elf.dead : [false, false, false];
+      elf.elf.dead = dead;
+      if (active == null) {
+        state.pendingElfPickByPlayer[playerId] = dead.some((x) => x === false);
+        return;
+      }
+      if (dead[active] === true) return;
+      if (Number(elf.hp) > Number(elf.koLine)) return;
+      const alreadyPending = Number.isFinite(elf.elf.pendingKoIndex) && elf.elf.pendingKoIndex !== null;
+      if (alreadyPending) return;
+      elf.elf.pendingKoIndex = active;
+      elf.elf.soul = (Number(elf.elf.soul) || 0) + 1;
+      const hasAlive = dead.some((x, i) => i !== active && x === false);
+      if (hasAlive) {
+        state.pendingElfPickByPlayer[playerId] = true;
+        pushLog(`灵：${playerId.toUpperCase()} 灵${active + 1} 被KO（魂=${elf.elf.soul}），请选择下一位灵`);
+      } else {
+        dead[active] = true;
+        elf.elf.dead = dead;
+        elf.elf.pendingKoIndex = null;
+        elf.elf.active = null;
+        elf.elf.pendingPick = false;
+        elf.hp = 0;
+        elf.maxHp = 0;
+        elf.hpRules = [];
+        state.pendingElfPickByPlayer[playerId] = false;
+        pushLog(`灵：${playerId.toUpperCase()} 无存活灵，精灵族进入沉寂（不再受伤/回复）`);
+      }
+    };
     const p1 = state.players.p1;
     const p2 = state.players.p2;
     if (Array.isArray(state.pendingDoubleQueue) && state.pendingDoubleQueue.length > 0) {
@@ -1506,41 +1527,6 @@ function createApp() {
       }
 
       if (!state.pendingDoubleQueue.length) {
-        const processElfRoundEnd = (playerId) => {
-          const player = state.players[playerId];
-          const elf = player?.fighters?.find?.((f) => f?.name === "精灵族");
-          if (!elf || !elf.elf) return;
-          if (elf.elf.gameKo === true) return;
-          const active = elf.elf.active;
-          const dead = Array.isArray(elf.elf.dead) ? elf.elf.dead : [false, false, false];
-          elf.elf.dead = dead;
-          if (active == null) {
-            state.pendingElfPickByPlayer[playerId] = dead.some((x) => x === false);
-            return;
-          }
-          if (dead[active] === true) return;
-          if (Number(elf.hp) > Number(elf.koLine)) return;
-          const alreadyPending = Number.isFinite(elf.elf.pendingKoIndex) && elf.elf.pendingKoIndex !== null;
-          if (alreadyPending) return;
-          elf.elf.pendingKoIndex = active;
-          elf.elf.soul = (Number(elf.elf.soul) || 0) + 1;
-          const hasAlive = dead.some((x, i) => i !== active && x === false);
-          if (hasAlive) {
-            state.pendingElfPickByPlayer[playerId] = true;
-            pushLog(`灵：${playerId.toUpperCase()} 灵${active + 1} 被KO（魂=${elf.elf.soul}），请选择下一位灵`);
-          } else {
-            dead[active] = true;
-            elf.elf.dead = dead;
-            elf.elf.pendingKoIndex = null;
-            elf.elf.active = null;
-            elf.elf.pendingPick = false;
-            elf.hp = 0;
-            elf.maxHp = 0;
-            elf.hpRules = [];
-            state.pendingElfPickByPlayer[playerId] = false;
-            pushLog(`灵：${playerId.toUpperCase()} 无存活灵，精灵族进入沉寂（不再受伤/回复）`);
-          }
-        };
         if (state.pendingElfPickByPlayer) {
           processElfRoundEnd("p1");
           processElfRoundEnd("p2");
@@ -1699,41 +1685,6 @@ function createApp() {
       return;
     }
 
-    const processElfRoundEnd = (playerId) => {
-      const player = state.players[playerId];
-      const elf = player?.fighters?.find?.((f) => f?.name === "精灵族");
-      if (!elf || !elf.elf) return;
-      if (elf.elf.gameKo === true) return;
-      const active = elf.elf.active;
-      const dead = Array.isArray(elf.elf.dead) ? elf.elf.dead : [false, false, false];
-      elf.elf.dead = dead;
-      if (active == null) {
-        state.pendingElfPickByPlayer[playerId] = dead.some((x) => x === false);
-        return;
-      }
-      if (dead[active] === true) return;
-      if (Number(elf.hp) > Number(elf.koLine)) return;
-      const alreadyPending = Number.isFinite(elf.elf.pendingKoIndex) && elf.elf.pendingKoIndex !== null;
-      if (alreadyPending) return;
-      elf.elf.pendingKoIndex = active;
-      elf.elf.soul = (Number(elf.elf.soul) || 0) + 1;
-      const hasAlive = dead.some((x, i) => i !== active && x === false);
-      if (hasAlive) {
-        state.pendingElfPickByPlayer[playerId] = true;
-        pushLog(`灵：${playerId.toUpperCase()} 灵${active + 1} 被KO（魂=${elf.elf.soul}），请选择下一位灵`);
-      } else {
-        dead[active] = true;
-        elf.elf.dead = dead;
-        elf.elf.pendingKoIndex = null;
-        elf.elf.active = null;
-        elf.elf.pendingPick = false;
-        elf.hp = 0;
-        elf.maxHp = 0;
-        elf.hpRules = [];
-        state.pendingElfPickByPlayer[playerId] = false;
-        pushLog(`灵：${playerId.toUpperCase()} 无存活灵，精灵族进入沉寂（不再受伤/回复）`);
-      }
-    };
     if (state.pendingElfPickByPlayer) {
       processElfRoundEnd("p1");
       processElfRoundEnd("p2");
@@ -1915,6 +1866,75 @@ function createApp() {
     clearLog();
   });
 
+  // 精灵族选择事件委托（仅绑定一次）
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-elf-pick]");
+    if (!btn) return;
+    const raw = btn.getAttribute("data-elf-pick") || "";
+    const [pid, idxStr] = raw.split(":");
+    const idx = Number(idxStr);
+    const player = state.players?.[pid];
+    const oppId = pid === "p1" ? "p2" : "p1";
+    const elf = player?.fighters?.find?.((x) => x?.name === "精灵族");
+    if (!elf || !elf.elf) return;
+    const dead = Array.isArray(elf.elf.dead) ? elf.elf.dead : [false, false, false];
+    if (!Number.isFinite(idx) || idx < 0 || idx > 2) return;
+    const pendingKoIndex = Number.isFinite(elf.elf.pendingKoIndex) ? Number(elf.elf.pendingKoIndex) : null;
+    if (dead[idx] === true) return;
+    if (pendingKoIndex === idx) return;
+    const wasKoPick = pendingKoIndex != null;
+    if (pendingKoIndex != null) {
+      dead[pendingKoIndex] = true;
+      elf.elf.pendingKoIndex = null;
+    }
+    const spirit = elf.elf.spirits?.[idx];
+    const maxHp = Number(spirit?.maxHp) || 0;
+    if (maxHp <= 0) return;
+    elf.elf.dead = dead;
+    elf.elf.active = idx;
+    elf.elf.pendingPick = false;
+    elf.hp = maxHp;
+    elf.maxHp = maxHp;
+    elf.hpRules = Array.isArray(spirit?.hpRules) ? spirit.hpRules : [];
+    state.pendingElfPickByPlayer[pid] = false;
+    pushLog(`灵：${pid.toUpperCase()} 选择灵${idx + 1}（HP=${maxHp}，魂=${Number(elf.elf.soul) || 0}）`);
+    const enterEffects = (elf.hpRules ?? []).filter((r) => r?.hp === elf.hp && r.stop !== true).flatMap((r) => r.effects ?? []);
+    if (enterEffects.length) {
+      const other = player.fighters.find((x) => x.id !== elf.id);
+      const opp = state.players[oppId];
+      const oppMain = opp?.fighters?.[0];
+      const oppSup = opp?.fighters?.[1];
+      const startPower = new Map();
+      for (const f of [...player.fighters, ...opp.fighters]) startPower.set(f.id, Number(f.power) || 0);
+      const ctx = {
+        kind: "battle",
+        my: { playerId: pid, mainId: elf.id, supportId: other?.id, bothIds: [elf.id, other?.id].filter(Boolean) },
+        opp: { playerId: oppId, mainId: oppMain?.id, supportId: oppSup?.id, bothIds: [oppMain?.id, oppSup?.id].filter(Boolean) },
+        startPower,
+      };
+      const settlement = settleEffects({
+        ctx,
+        myCard: { fighterName: "精灵族", text: "", id: "elf-enter" },
+        oppCard: { fighterName: "对手", text: "", id: "elf-enter-opp" },
+        myEffects: enterEffects,
+        oppEffects: [],
+        myPlayer: player,
+        oppPlayer: opp,
+      });
+      const beforeSnapshot = snapshotFighters();
+      applyDeltas(state, settlement.hpDelta, settlement.powerDelta, beforeSnapshot, null, null, null);
+    }
+    if (wasKoPick) {
+      state.lastRound = null;
+      state.lastIntermissionEffect = null;
+      state.compareHold = false;
+      state.lastFlip = null;
+      scheduleRender();
+      battleTurn();
+      return;
+    }
+    scheduleRender();
+  });
   init().catch((e) => {
     state.phase = PHASE.SETUP;
     render();
@@ -1922,42 +1942,4 @@ function createApp() {
   });
 }
 
-createApp();
-    els.logDialog.showModal();
-  });
-  els.btnNextBattle.addEventListener("click", battleTurn);
-  els.btnEnterConstruction.addEventListener("click", enterConstructionNow);
-  els.btnConfirmEnd.addEventListener("click", confirmEndNow);
-  els.btnCompare.addEventListener("pointerdown", (e) => {
-    if (els.btnCompare.disabled) return;
-    state.compareHold = true;
-    try {
-      els.btnCompare.setPointerCapture(e.pointerId);
-    } catch {}
-    renderPlayers();
-  });
-  els.btnCompare.addEventListener("pointerup", () => {
-    if (!state.compareHold) return;
-    state.compareHold = false;
-    renderPlayers();
-  });
-  els.btnCompare.addEventListener("pointercancel", () => {
-    if (!state.compareHold) return;
-    state.compareHold = false;
-    renderPlayers();
-  });
-  window.addEventListener("resize", () => requestAnimationFrame(() => requestAnimationFrame(positionHpArrows)));
-  els.btnClearLog.addEventListener("click", (e) => {
-    e.preventDefault();
-    clearLog();
-  });
-
-  init().catch((e) => {
-    state.phase = PHASE.SETUP;
-    render();
-    pushLog(`初始化失败：${e?.message ?? String(e)}`);
-  });
-}
-
-createApp();
 createApp();

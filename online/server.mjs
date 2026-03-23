@@ -19,7 +19,7 @@ import {
   startConstructionForPlayer,
   applyConstructionChoice,
   formatCardLabel,
-} from "./game-engine.mjs";
+} from "../game-engine.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -197,23 +197,13 @@ function filterStateForPlayer(state, playerId) {
   const oppId = playerId === "p1" ? "p2" : "p1";
 
   // 序列化玩家数据
-  function serializePlayerForSelf(player) {
+  function serializePlayer(player, isOpponent = false) {
     return {
       id: player.id,
       fighters: player.fighters.map(serializeFighter),
-      battleDeck: player.battleDeck.map(serializeCard),
+      battleDeck: isOpponent ? { length: player.battleDeck.length } : player.battleDeck.map(serializeCard),
       resolvedPile: player.resolvedPile.map(serializeCard),
-      constructionDeck: player.constructionDeck.map(serializeCard),
-    };
-  }
-
-  function serializePlayerForOpponent(player) {
-    return {
-      id: player.id,
-      fighters: player.fighters.map(serializeFighter),
-      battleDeck: { length: player.battleDeck.length },
-      resolvedPile: player.resolvedPile.map(serializeCard),
-      constructionDeck: { length: player.constructionDeck.length },
+      constructionDeck: isOpponent ? { length: player.constructionDeck.length } : player.constructionDeck.map(serializeCard),
     };
   }
 
@@ -281,8 +271,8 @@ function filterStateForPlayer(state, playerId) {
     lastIntermissionEffect: state.lastIntermissionEffect,
     compareHold: state.compareHold,
     players: {
-      [playerId]: serializePlayerForSelf(state.players[playerId]),
-      [oppId]: serializePlayerForOpponent(state.players[oppId]),
+      [playerId]: serializePlayer(state.players[playerId]),
+      [oppId]: serializePlayer(state.players[oppId], true),
     },
     construction: serializeConstruction(state.construction, playerId),
     winner: state.winner,
@@ -994,6 +984,42 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // 特殊路由：/game-engine.mjs 从父目录提供
+    if (pathname === "/game-engine.mjs") {
+      const gameEnginePath = path.join(__dirname, "..", "game-engine.mjs");
+      try {
+        const data = await readFile(gameEnginePath);
+        res.writeHead(200, {
+          "Content-Type": "text/javascript; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(data);
+        return;
+      } catch {
+        res.writeHead(404);
+        res.end("Not Found: game-engine.mjs");
+        return;
+      }
+    }
+
+    // 特殊路由：/styles.css 从父目录提供
+    if (pathname === "/styles.css") {
+      const stylesPath = path.join(__dirname, "..", "styles.css");
+      try {
+        const data = await readFile(stylesPath);
+        res.writeHead(200, {
+          "Content-Type": "text/css; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(data);
+        return;
+      } catch {
+        res.writeHead(404);
+        res.end("Not Found: styles.css");
+        return;
+      }
+    }
+
     const filePath = safeResolve(__dirname, pathname);
     if (!filePath) {
       res.writeHead(403);
@@ -1003,9 +1029,10 @@ const server = http.createServer(async (req, res) => {
 
     const data = await readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
+    const isImage = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"].includes(ext);
     res.writeHead(200, {
       "Content-Type": guessContentType(filePath),
-      "Cache-Control": "no-store",
+      "Cache-Control": isImage ? "public, max-age=86400" : "no-store",
     });
     if (ext === ".txt") {
       res.end(decodeTxtToUtf8(data));

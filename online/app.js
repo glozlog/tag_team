@@ -13,7 +13,7 @@ import {
   enterConstructionIfNeeded,
   beginNextConstructionStep,
   applyConstructionChoice,
-} from './game-engine.mjs';
+} from '../game-engine.mjs';
 
 import {
   escapeHtml,
@@ -29,6 +29,7 @@ import {
   renderFighter as renderFighterBase,
   positionHpArrows,
   updateFighterDOM,
+  renderDeckList as renderDeckListBase,
 } from '../shared-ui.mjs';
 
 function createApp() {
@@ -561,14 +562,9 @@ function createApp() {
     return renderFighterBase(f, { ...opts, elfPickHtml }, { state, PHASE });
   }
 
+  // 包装 renderDeckList，封装闭包依赖
   function renderDeckList(title, cards) {
-    const lines = cards
-      .map((c, idx) => `${String(idx + 1).padStart(2, "0")}. ${cardLabel(c)}  ${displayCardText(c)}`)
-      .join("\n");
-    return `
-      <div class="deck-title">${title}</div>
-      <div class="deck-list">${lines || "-"}</div>
-    `;
+    return renderDeckListBase(title, cards, state, PHASE);
   }
 
   function syncRevelationSizing() {
@@ -678,29 +674,7 @@ function createApp() {
     };
     updateOrCreateFighters(els.p1Fighters, leftPlayer.fighters, leftMain);
     updateOrCreateFighters(els.p2Fighters, rightPlayer.fighters, rightMain);
-    document.querySelectorAll(`[data-elf-pick]`).forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const raw = btn.getAttribute("data-elf-pick") || "";
-        const [pid, idxStr] = raw.split(":");
-        const idx = Number(idxStr);
-        const player = state.players?.[pid];
-        const elf = player?.fighters?.find?.((x) => x?.name === "精灵族");
-        if (!elf || !elf.elf) return;
-        const dead = Array.isArray(elf.elf.dead) ? elf.elf.dead : [false, false, false];
-        if (!Number.isFinite(idx) || idx < 0 || idx > 2) return;
-        const pendingKoIndex = Number.isFinite(elf.elf.pendingKoIndex) ? Number(elf.elf.pendingKoIndex) : null;
-        if (dead[idx] === true) return;
-        if (pendingKoIndex === idx) return;
-        const spirit = elf.elf.spirits?.[idx];
-        const maxHp = Number(spirit?.maxHp) || 0;
-        if (maxHp <= 0) return;
-        // 发送精灵族灵选择消息到服务器
-        wsSend({
-          type: "ELF_PICK",
-          data: { spiritIndex: idx }
-        });
-      });
-    });
+    // 注意：elf-pick 事件已改为事件委托，在 createApp 初始化时绑定一次
 
     els.p1BattleCount.textContent = `战斗牌库: ${Array.isArray(leftPlayer.battleDeck) ? leftPlayer.battleDeck.length : (leftPlayer.battleDeck?.length || 0)}`;
     els.p1ConstructCount.textContent = `构筑牌库: ${Array.isArray(leftPlayer.constructionDeck) ? leftPlayer.constructionDeck.length : (leftPlayer.constructionDeck?.length || 0)}`;
@@ -918,6 +892,84 @@ function createApp() {
         const allPicked = new Set([...pickedByP1, ...pickedByP2]);
         
         const gridNames = names.slice(0, 12);
+        const mySlotA = amP1 ? setup.p1a : amP2 ? setup.p2a : null;
+        const mySlotB = amP1 ? setup.p1b : amP2 ? setup.p2b : null;
+        
+        // 检测是否已渲染过 pick 阶段 DOM（用于 DOM 复用）
+        const existingCard = els.constructionPanel.querySelector('[data-pick-rendered="true"]');
+        
+        if (existingCard) {
+          // === 增量更新模式 ===
+          // 更新 2 个槽位
+          const slots = [
+            { slot: "a", value: mySlotA, fallback: "空槽1" },
+            { slot: "b", value: mySlotB, fallback: "空槽2" },
+          ];
+          for (const { slot, value, fallback } of slots) {
+            const slotEl = existingCard.querySelector(`[data-setup-pick="slot"][data-slot="${slot}"]`);
+            if (slotEl) {
+              const currentName = slotEl.getAttribute("data-current-fighter") || "";
+              if (currentName !== (value || "")) {
+                slotEl.innerHTML = slotLabel(value, fallback);
+                slotEl.setAttribute("data-current-fighter", value || "");
+              }
+            }
+          }
+          
+          // 更新 12 个池子格子（只更新状态，不重建 img）
+          for (let i = 0; i < 12; i++) {
+            const n = gridNames[i] ?? null;
+            if (!n) continue;
+            const fighterEl = existingCard.querySelector(`[data-setup-pick="fighter"][data-name="${CSS.escape(n)}"]`);
+            if (!fighterEl) continue;
+            
+            const takenByMe = myPickSet.has(n);
+            const takenByOther = allPicked.has(n) && !takenByMe;
+            const disabled = takenByOther || myConfirmed;
+            let title = "";
+            if (takenByMe) title = "已选择";
+            else if (takenByOther) title = "已被选择";
+            
+            // 更新 disabled 状态
+            if (disabled) {
+              fighterEl.classList.add("disabled");
+              fighterEl.setAttribute("draggable", "false");
+            } else {
+              fighterEl.classList.remove("disabled");
+              fighterEl.setAttribute("draggable", "true");
+            }
+            fighterEl.title = title;
+          }
+          
+          // 更新确认按钮状态
+          const confirmBtn = document.getElementById("setup-confirm");
+          if (confirmBtn) {
+            confirmBtn.disabled = myPickCount < 2 || myConfirmed;
+            confirmBtn.textContent = myConfirmed ? '已确认' : '确认开始';
+          }
+          
+          // 更新清空按钮状态
+          const clearBtn = document.getElementById("setup-clear");
+          if (clearBtn) {
+            clearBtn.disabled = myConfirmed;
+          }
+          
+          // 更新等待提示
+          let waitingHtml = "";
+          if (myConfirmed && !opponentConfirmed) {
+            waitingHtml = `<div class="waiting-message" style="text-align: center; padding: 16px; color: #f59e0b; background: rgba(245, 158, 11, 0.1); border-radius: 8px; margin-top: 16px;">等待对方选择英雄...</div>`;
+          } else if (myConfirmed && opponentConfirmed) {
+            waitingHtml = `<div class="waiting-message" style="text-align: center; padding: 16px; color: #22c55e; background: rgba(34, 197, 94, 0.1); border-radius: 8px; margin-top: 16px;">双方已确认，游戏即将开始...</div>`;
+          }
+          const waitingContainer = existingCard.querySelector('.waiting-container');
+          if (waitingContainer) {
+            waitingContainer.innerHTML = waitingHtml;
+          }
+          
+          return; // 增量更新完成，直接返回
+        }
+        
+        // === 首次渲染模式 ===
         const poolCells = [];
         for (let i = 0; i < 12; i++) {
           const n = gridNames[i] ?? null;
@@ -949,19 +1001,15 @@ function createApp() {
           waitingHtml = `<div class="waiting-message" style="text-align: center; padding: 16px; color: #22c55e; background: rgba(34, 197, 94, 0.1); border-radius: 8px; margin-top: 16px;">双方已确认，游戏即将开始...</div>`;
         }
 
-        // 只显示自己的英雄选择区域
-        const mySlotA = amP1 ? setup.p1a : amP2 ? setup.p2a : null;
-        const mySlotB = amP1 ? setup.p1b : amP2 ? setup.p2b : null;
-        
         els.constructionPanel.innerHTML = `
-          <div class="construction-card">
+          <div class="construction-card" data-pick-rendered="true">
             <div style="text-align: center; margin-bottom: 16px;"><strong>${myLabel}</strong>：请选择 2 位战士</div>
             <div class="setup-pick-grid" style="grid-template-columns: 1fr; max-width: 600px; margin: 0 auto;">
               <div class="setup-side" data-player="${myPlayerId || 'p1'}">
                 <div class="setup-side-title">我的选择</div>
                 <div class="setup-slots" style="display: flex; gap: 12px; justify-content: center;">
-                  <div class="setup-slot" data-setup-pick="slot" data-player="${myPlayerId || 'p1'}" data-slot="a">${slotLabel(mySlotA, "空槽1")}</div>
-                  <div class="setup-slot" data-setup-pick="slot" data-player="${myPlayerId || 'p1'}" data-slot="b">${slotLabel(mySlotB, "空槽2")}</div>
+                  <div class="setup-slot" data-setup-pick="slot" data-player="${myPlayerId || 'p1'}" data-slot="a" data-current-fighter="${escapeHtml(mySlotA || '')}">${slotLabel(mySlotA, "空槽1")}</div>
+                  <div class="setup-slot" data-setup-pick="slot" data-player="${myPlayerId || 'p1'}" data-slot="b" data-current-fighter="${escapeHtml(mySlotB || '')}">${slotLabel(mySlotB, "空槽2")}</div>
                 </div>
               </div>
               <div class="setup-pool setup-pool-grid" data-player="pool" style="grid-template-columns: repeat(4, minmax(0, 1fr));">
@@ -973,7 +1021,7 @@ function createApp() {
               <div class="spacer"></div>
               <button type="button" id="setup-confirm" ${myPickCount < 2 || myConfirmed ? 'disabled' : ''}>${myConfirmed ? '已确认' : '确认开始'}</button>
             </div>
-            ${waitingHtml}
+            <div class="waiting-container">${waitingHtml}</div>
           </div>
         `;
 
@@ -991,107 +1039,153 @@ function createApp() {
           return true;
         };
 
-        const slots = els.constructionPanel.querySelectorAll(`[data-setup-pick="slot"]`);
-        slots.forEach((el) => {
-          const pid = el.getAttribute("data-player");
-          // 在线上对战模式下，只允许为自己的阵营选择英雄
-          const isMySlot = myPlayerId ? (myPlayerId === pid) : true;
+        // setup pick 拖拽事件委托（仅绑定一次）
+        if (!els.constructionPanel._setupPickDelegated) {
+          els.constructionPanel._setupPickDelegated = true;
           
-          el.addEventListener("dragover", (ev) => {
-            ev.preventDefault();
-            // 如果不是自己的槽位，不允许放置
-            if (!isMySlot) {
-              ev.dataTransfer.dropEffect = "none";
+          // slot 的 dragover 事件
+          els.constructionPanel.addEventListener("dragover", (ev) => {
+            const slot = ev.target.closest('[data-setup-pick="slot"]');
+            if (slot) {
+              ev.preventDefault();
+              const pid = slot.getAttribute("data-player");
+              const isMySlot = myPlayerId ? (myPlayerId === pid) : true;
+              if (!isMySlot) {
+                ev.dataTransfer.dropEffect = "none";
+                return;
+              }
+              slot.classList.add("active");
+              ev.dataTransfer.dropEffect = "copy";
               return;
             }
-            el.classList.add("active");
-            ev.dataTransfer.dropEffect = "copy";
+            const pool = ev.target.closest('.setup-pool');
+            if (pool) {
+              ev.preventDefault();
+              pool.classList.add("active");
+              ev.dataTransfer.dropEffect = "move";
+            }
           });
-          el.addEventListener("dragleave", () => el.classList.remove("active"));
-          el.addEventListener("drop", (ev) => {
-            ev.preventDefault();
-            el.classList.remove("active");
-            // 如果不是自己的槽位，忽略放置
-            if (!isMySlot) return;
-            
-            const raw = ev.dataTransfer.getData("text/plain");
-            const slot = el.getAttribute("data-slot");
-            if (!pid || !slot) return;
-            if (raw.startsWith("pick:")) {
-              const name = raw.slice("pick:".length);
-              const ok = setSlot(pid, slot, name);
-              if (!ok) {
-                window.alert("对手已选择该战士");
+          
+          // slot 和 pool 的 dragleave 事件
+          els.constructionPanel.addEventListener("dragleave", (ev) => {
+            const slot = ev.target.closest('[data-setup-pick="slot"]');
+            if (slot) {
+              slot.classList.remove("active");
+              return;
+            }
+            const pool = ev.target.closest('.setup-pool');
+            if (pool) {
+              pool.classList.remove("active");
+            }
+          });
+          
+          // slot 和 pool 的 drop 事件
+          els.constructionPanel.addEventListener("drop", (ev) => {
+            const slot = ev.target.closest('[data-setup-pick="slot"]');
+            if (slot) {
+              ev.preventDefault();
+              slot.classList.remove("active");
+              const pid = slot.getAttribute("data-player");
+              const isMySlot = myPlayerId ? (myPlayerId === pid) : true;
+              if (!isMySlot) return;
+              
+              const raw = ev.dataTransfer.getData("text/plain");
+              const slotName = slot.getAttribute("data-slot");
+              if (!pid || !slotName) return;
+              if (raw.startsWith("pick:")) {
+                const name = raw.slice("pick:".length);
+                const currentSetup = state.setup;
+                const oppPicked = pid === "p1" ? new Set([currentSetup.p2a, currentSetup.p2b].filter(Boolean)) : new Set([currentSetup.p1a, currentSetup.p1b].filter(Boolean));
+                if (oppPicked.has(name)) {
+                  window.alert("对手已选择该战士");
+                  scheduleRender();
+                  return;
+                }
+                const key = pid === "p1" ? (slotName === "a" ? "p1a" : "p1b") : slotName === "a" ? "p2a" : "p2b";
+                const otherKey = pid === "p1" ? (slotName === "a" ? "p1b" : "p1a") : slotName === "a" ? "p2b" : "p2a";
+                const cur = currentSetup[key] ?? null;
+                const other = currentSetup[otherKey] ?? null;
+                if (other === name) currentSetup[otherKey] = cur;
+                currentSetup[key] = name;
                 scheduleRender();
                 return;
               }
-              scheduleRender();
+              if (raw.startsWith("slot:")) {
+                const parts = raw.split(":");
+                if (parts.length !== 4) return;
+                const fromPid = parts[1];
+                const fromSlot = parts[2];
+                const name = parts[3];
+                if (fromPid !== pid) return;
+                const currentSetup = state.setup;
+                const key = pid === "p1" ? (slotName === "a" ? "p1a" : "p1b") : slotName === "a" ? "p2a" : "p2b";
+                const otherKey = pid === "p1" ? (slotName === "a" ? "p1b" : "p1a") : slotName === "a" ? "p2b" : "p2a";
+                const cur = currentSetup[key] ?? null;
+                const other = currentSetup[otherKey] ?? null;
+                if (other === name) currentSetup[otherKey] = cur;
+                currentSetup[key] = name;
+                const fromKey = pid === "p1" ? (fromSlot === "a" ? "p1a" : "p1b") : fromSlot === "a" ? "p2a" : "p2b";
+                if (fromSlot !== slotName) currentSetup[fromKey] = null;
+                scheduleRender();
+              }
               return;
             }
-            if (raw.startsWith("slot:")) {
+            const pool = ev.target.closest('.setup-pool');
+            if (pool) {
+              ev.preventDefault();
+              pool.classList.remove("active");
+              const raw = ev.dataTransfer.getData("text/plain");
+              if (!raw.startsWith("slot:")) return;
               const parts = raw.split(":");
               if (parts.length !== 4) return;
-              const fromPid = parts[1];
-              const fromSlot = parts[2];
-              const name = parts[3];
-              if (fromPid !== pid) return;
-              setSlot(pid, slot, name);
-              const fromKey = pid === "p1" ? (fromSlot === "a" ? "p1a" : "p1b") : fromSlot === "a" ? "p2a" : "p2b";
-              if (fromSlot !== slot) setup[fromKey] = null;
+              const pid = parts[1];
+              const slotName = parts[2];
+              const key = pid === "p1" ? (slotName === "a" ? "p1a" : "p1b") : slotName === "a" ? "p2a" : "p2b";
+              state.setup[key] = null;
               scheduleRender();
             }
           });
-        });
-
-        els.constructionPanel.querySelectorAll(`[data-setup-pick="fighter"]`).forEach((el) => {
-          el.addEventListener("dragstart", (ev) => {
-            if (el.classList.contains("disabled") || el.classList.contains("placeholder")) {
-              ev.preventDefault();
+          
+          // fighter 的 dragstart 事件
+          els.constructionPanel.addEventListener("dragstart", (ev) => {
+            const fighter = ev.target.closest('[data-setup-pick="fighter"]');
+            if (fighter) {
+              if (fighter.classList.contains("disabled") || fighter.classList.contains("placeholder")) {
+                ev.preventDefault();
+                return;
+              }
+              const name = fighter.getAttribute("data-name");
+              ev.dataTransfer.setData("text/plain", `pick:${name}`);
+              ev.dataTransfer.effectAllowed = "copy";
+              fighter.classList.add("dragging");
               return;
             }
-            const name = el.getAttribute("data-name");
-            ev.dataTransfer.setData("text/plain", `pick:${name}`);
-            ev.dataTransfer.effectAllowed = "copy";
-            el.classList.add("dragging");
+            const picked = ev.target.closest('[data-setup-pick="picked"]');
+            if (picked) {
+              const name = picked.getAttribute("data-name");
+              const parent = picked.closest('[data-setup-pick="slot"]');
+              const pid = parent?.getAttribute("data-player");
+              const slotName = parent?.getAttribute("data-slot");
+              if (!pid || !slotName || !name) return;
+              ev.dataTransfer.setData("text/plain", `slot:${pid}:${slotName}:${name}`);
+              ev.dataTransfer.effectAllowed = "move";
+              picked.classList.add("dragging");
+            }
           });
-          el.addEventListener("dragend", () => el.classList.remove("dragging"));
-        });
-
-        els.constructionPanel.querySelectorAll(`[data-setup-pick="picked"]`).forEach((el) => {
-          el.addEventListener("dragstart", (ev) => {
-            const name = el.getAttribute("data-name");
-            const parent = el.closest(`[data-setup-pick="slot"]`);
-            const pid = parent?.getAttribute("data-player");
-            const slot = parent?.getAttribute("data-slot");
-            if (!pid || !slot || !name) return;
-            ev.dataTransfer.setData("text/plain", `slot:${pid}:${slot}:${name}`);
-            ev.dataTransfer.effectAllowed = "move";
-            el.classList.add("dragging");
+          
+          // fighter 和 picked 的 dragend 事件
+          els.constructionPanel.addEventListener("dragend", (ev) => {
+            const fighter = ev.target.closest('[data-setup-pick="fighter"]');
+            if (fighter) {
+              fighter.classList.remove("dragging");
+              return;
+            }
+            const picked = ev.target.closest('[data-setup-pick="picked"]');
+            if (picked) {
+              picked.classList.remove("dragging");
+            }
           });
-          el.addEventListener("dragend", () => el.classList.remove("dragging"));
-        });
-
-        els.constructionPanel.querySelectorAll(`.setup-pool`).forEach((poolEl) => {
-          poolEl.addEventListener("dragover", (ev) => {
-            ev.preventDefault();
-            poolEl.classList.add("active");
-            ev.dataTransfer.dropEffect = "move";
-          });
-          poolEl.addEventListener("dragleave", () => poolEl.classList.remove("active"));
-          poolEl.addEventListener("drop", (ev) => {
-            ev.preventDefault();
-            poolEl.classList.remove("active");
-            const raw = ev.dataTransfer.getData("text/plain");
-            if (!raw.startsWith("slot:")) return;
-            const parts = raw.split(":");
-            if (parts.length !== 4) return;
-            const pid = parts[1];
-            const slot = parts[2];
-            const key = pid === "p1" ? (slot === "a" ? "p1a" : "p1b") : slot === "a" ? "p2a" : "p2b";
-            setup[key] = null;
-            scheduleRender();
-          });
-        });
+        }
 
         const confirm = document.getElementById("setup-confirm");
         confirm.addEventListener("click", () => {
@@ -2174,6 +2268,30 @@ function battleTurn() {
     }
   }, 30000);  // 每30秒检查一次
 
+  // 精灵族选择事件委托（仅绑定一次）
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-elf-pick]");
+    if (!btn) return;
+    const raw = btn.getAttribute("data-elf-pick") || "";
+    const [pid, idxStr] = raw.split(":");
+    const idx = Number(idxStr);
+    const player = state.players?.[pid];
+    const elf = player?.fighters?.find?.((x) => x?.name === "精灵族");
+    if (!elf || !elf.elf) return;
+    const dead = Array.isArray(elf.elf.dead) ? elf.elf.dead : [false, false, false];
+    if (!Number.isFinite(idx) || idx < 0 || idx > 2) return;
+    const pendingKoIndex = Number.isFinite(elf.elf.pendingKoIndex) ? Number(elf.elf.pendingKoIndex) : null;
+    if (dead[idx] === true) return;
+    if (pendingKoIndex === idx) return;
+    const spirit = elf.elf.spirits?.[idx];
+    const maxHp = Number(spirit?.maxHp) || 0;
+    if (maxHp <= 0) return;
+    // 发送精灵族灵选择消息到服务器
+    wsSend({
+      type: "ELF_PICK",
+      data: { spiritIndex: idx }
+    });
+  });
   init().catch((e) => {
     state.phase = PHASE.SETUP;
     render();
