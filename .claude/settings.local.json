@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check /Users/justgloz/Documents/tag_team/app.js)",
+      "Bash(node -e \"console.log\\(process.version\\)\")",
+      "Bash(npm init:*)",
+      "Bash(npm install:*)",
+      "Bash(timeout 5 node server.mjs)",
+      "Bash(node -e \":*)"
+    ]
+  }
+}
