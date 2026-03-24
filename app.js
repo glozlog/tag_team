@@ -2,20 +2,20 @@ import {
   PHASE,
   nowTime,
   formatCardLabel,
-  ensureCardCompiled,
   parseFighters,
-  parseCardEffects,
   selfTestFighters,
-  createInitialState,
-  buildContextForBattle,
-  settleEffects,
-  applyDeltas,
-  checkWinner,
-  enterConstructionIfNeeded,
-  startConstructionForPlayer,
-  applyConstructionChoice,
-  beginNextConstructionStep,
 } from "./shared/game-logic.js";
+
+import {
+  C_CREATE_ROOM, C_JOIN_ROOM, C_PICK_FIGHTERS, C_DECK_ORDER,
+  C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END,
+  S_ROOM_CREATED, S_ROOM_JOINED, S_OPPONENT_JOINED,
+  S_OPPONENT_DISCONNECTED, S_OPPONENT_RECONNECTED,
+  S_PICKS_LOCKED, S_GAME_START,
+  S_WAITING, S_ELF_PICK_NEEDED,
+  S_GAME_OVER, S_STATE_SYNC, S_ERROR,
+  makeMsg, parseMsg,
+} from "./shared/protocol.js";
 
 function createApp() {
   const els = {
@@ -45,6 +45,15 @@ function createApp() {
     constructionPanel: document.getElementById("construction-panel"),
     rulesDialog: document.getElementById("rules-dialog"),
     rulesText: document.getElementById("rules-text"),
+    // Lobby elements
+    lobby: document.getElementById("lobby"),
+    lobbyStatus: document.getElementById("lobby-status"),
+    btnCreateRoom: document.getElementById("btn-create-room"),
+    btnJoinRoom: document.getElementById("btn-join-room"),
+    inputRoomCode: document.getElementById("input-room-code"),
+    gameLayout: document.getElementById("game-layout"),
+    headerSubtitle: document.getElementById("header-subtitle"),
+    waitingBanner: document.getElementById("waiting-banner"),
   };
 
   const data = {
@@ -58,6 +67,16 @@ function createApp() {
   let state = { phase: PHASE.LOADING };
   let renderQueued = false;
   let activeInsertDrag = null;
+
+  // ─── Online multiplayer state ──────────────────────────────────────────────
+  let ws = null;
+  let myPlayerId = null; // "p1" or "p2"
+  let roomCode = null;
+  let clientPhase = "lobby"; // lobby | waiting_join | picking | waiting_picks | ordering | waiting_order | game
+  let reconnectTimer = null;
+  let reconnectDelay = 1000;
+
+  function oppOf(pid) { return pid === "p1" ? "p2" : "p1"; }
 
   function scheduleRender() {
     if (renderQueued) return;
@@ -76,6 +95,232 @@ function createApp() {
 
   function clearLog() {
     els.log.textContent = "";
+  }
+
+  // ─── WebSocket connection ─────────────────────────────────────────────────
+
+  function sendMsg(type, payload = {}) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(makeMsg(type, payload));
+    }
+  }
+
+  function connectWs(onOpenAction) {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(`${proto}//${location.host}`);
+
+    ws.addEventListener("open", () => {
+      reconnectDelay = 1000;
+      if (onOpenAction) onOpenAction();
+    });
+
+    ws.addEventListener("message", (ev) => {
+      const msg = parseMsg(ev.data);
+      if (msg) handleServerMessage(msg);
+    });
+
+    ws.addEventListener("close", () => {
+      if (clientPhase === "game" || clientPhase === "picking" || clientPhase === "ordering") {
+        showWaiting("连接断开，正在重连...");
+        scheduleReconnect();
+      }
+    });
+
+    ws.addEventListener("error", () => {});
+  }
+
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+      reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
+      connectWs(() => {
+        if (roomCode) sendMsg(C_JOIN_ROOM, { code: roomCode });
+      });
+    }, reconnectDelay);
+  }
+
+  function showWaiting(msg) {
+    if (els.waitingBanner) {
+      els.waitingBanner.textContent = msg || "";
+      els.waitingBanner.classList.toggle("hidden", !msg);
+    }
+  }
+
+  function hideWaiting() {
+    showWaiting(null);
+  }
+
+  function showLobby() {
+    if (els.lobby) els.lobby.classList.remove("hidden");
+    if (els.gameLayout) els.gameLayout.classList.add("hidden");
+    clientPhase = "lobby";
+  }
+
+  function hideLobby() {
+    if (els.lobby) els.lobby.classList.add("hidden");
+    if (els.gameLayout) els.gameLayout.classList.remove("hidden");
+  }
+
+  function setHeaderInfo(text) {
+    if (els.headerSubtitle) els.headerSubtitle.textContent = text;
+  }
+
+  // ─── State hydration (plain objects → Maps/Sets for rendering) ────────────
+
+  function hydrateState(raw) {
+    if (!raw) return raw;
+    const s = { ...raw };
+    if (s.lastRound) {
+      s.lastRound = { ...s.lastRound };
+      s.lastRound.before = new Map(Object.entries(s.lastRound.before ?? {}));
+      s.lastRound.after = new Map(Object.entries(s.lastRound.after ?? {}));
+      s.lastRound.hpTraceById = new Map(Object.entries(s.lastRound.hpTraceById ?? {}));
+      s.lastRound.guardBlockedByPlayerId = new Set(s.lastRound.guardBlockedByPlayerId ?? []);
+      s.lastRound.flipTriggeredByCardId = new Set(s.lastRound.flipTriggeredByCardId ?? []);
+    }
+    if (s.lastIntermissionEffect) {
+      s.lastIntermissionEffect = { ...s.lastIntermissionEffect };
+      s.lastIntermissionEffect.before = new Map(Object.entries(s.lastIntermissionEffect.before ?? {}));
+      s.lastIntermissionEffect.after = new Map(Object.entries(s.lastIntermissionEffect.after ?? {}));
+    }
+    // Ensure deck arrays exist (opponent's hidden decks come as undefined)
+    for (const pid of ["p1", "p2"]) {
+      if (s.players?.[pid]) {
+        s.players[pid].battleDeck = s.players[pid].battleDeck ?? [];
+        s.players[pid].constructionDeck = s.players[pid].constructionDeck ?? [];
+        s.players[pid].resolvedPile = s.players[pid].resolvedPile ?? [];
+      }
+    }
+    return s;
+  }
+
+  // ─── Server message handler ───────────────────────────────────────────────
+
+  function handleServerMessage(msg) {
+    switch (msg.type) {
+      case S_ROOM_CREATED: {
+        roomCode = msg.code;
+        myPlayerId = msg.playerId;
+        clientPhase = "waiting_join";
+        if (els.lobbyStatus) els.lobbyStatus.textContent = `房间码：${roomCode}  等待对手加入...`;
+        setHeaderInfo(`房间 ${roomCode} · ${myPlayerId.toUpperCase()}`);
+        break;
+      }
+      case S_ROOM_JOINED: {
+        roomCode = msg.code;
+        myPlayerId = msg.playerId;
+        setHeaderInfo(`房间 ${roomCode} · ${myPlayerId.toUpperCase()}`);
+        // If both players are present, go to picking
+        clientPhase = "picking";
+        hideLobby();
+        hideWaiting();
+        state = {
+          phase: PHASE.SETUP,
+          showDecks: false,
+          setup: { step: "pick", myA: null, myB: null },
+          lastFlip: null,
+          lastRound: null,
+          awaitingConstruction: false,
+          pendingGameOver: null,
+          compareHold: false,
+        };
+        render();
+        break;
+      }
+      case S_OPPONENT_JOINED: {
+        hideWaiting();
+        if (clientPhase === "waiting_join") {
+          clientPhase = "picking";
+          hideLobby();
+          state = {
+            phase: PHASE.SETUP,
+            showDecks: false,
+            setup: { step: "pick", myA: null, myB: null },
+            lastFlip: null,
+            lastRound: null,
+            awaitingConstruction: false,
+            pendingGameOver: null,
+            compareHold: false,
+          };
+          render();
+        }
+        break;
+      }
+      case S_OPPONENT_DISCONNECTED: {
+        showWaiting("对手已断开连接，等待重连...");
+        break;
+      }
+      case S_OPPONENT_RECONNECTED: {
+        hideWaiting();
+        break;
+      }
+      case S_PICKS_LOCKED: {
+        clientPhase = "ordering";
+        hideWaiting();
+        const myPicks = msg[`${myPlayerId}Picks`] ?? (myPlayerId === "p1" ? msg.p1Picks : msg.p2Picks);
+        state.setup = {
+          step: "build",
+          myPicks: myPicks,
+          topName: null,
+        };
+        render();
+        break;
+      }
+      case S_GAME_START: {
+        clientPhase = "game";
+        hideWaiting();
+        state = hydrateState(msg.state);
+        if (Array.isArray(msg.log)) {
+          clearLog();
+          for (const line of msg.log) els.log.textContent += line + "\n";
+        }
+        render();
+        break;
+      }
+      case S_STATE_SYNC: {
+        hideWaiting();
+        if (clientPhase !== "game") {
+          // Reconnected mid-game
+          clientPhase = "game";
+          hideLobby();
+        }
+        state = hydrateState(msg.state);
+        if (Array.isArray(msg.log)) {
+          clearLog();
+          for (const line of msg.log) els.log.textContent += line + "\n";
+          els.log.scrollTop = els.log.scrollHeight;
+        }
+        render();
+        break;
+      }
+      case S_WAITING: {
+        const labels = {
+          pick: "等待对方选择战士...",
+          order: "等待对方排列起手牌堆...",
+          elf_pick: "等待对方选择精灵入场...",
+          construction: "等待对方完成构筑...",
+        };
+        showWaiting(labels[msg.action] || "等待对方操作...");
+        break;
+      }
+      case S_ELF_PICK_NEEDED: {
+        // State sync already has pendingElfPickByPlayer set; just ensure render
+        hideWaiting();
+        render();
+        break;
+      }
+      case S_GAME_OVER: {
+        hideWaiting();
+        if (msg.state) state = hydrateState(msg.state);
+        render();
+        break;
+      }
+      case S_ERROR: {
+        window.alert(msg.message || "服务器错误");
+        break;
+      }
+    }
   }
 
   function phaseLabel() {
@@ -622,77 +867,25 @@ function createApp() {
       btn.addEventListener("click", () => {
         const raw = btn.getAttribute("data-elf-pick") || "";
         const [pid, idxStr] = raw.split(":");
+        if (pid !== myPlayerId) return; // can only pick own elf
         const idx = Number(idxStr);
-        const player = state.players?.[pid];
-        const oppId = pid === "p1" ? "p2" : "p1";
-        const elf = player?.fighters?.find?.((x) => x?.name === "精灵族");
-        if (!elf || !elf.elf) return;
-        const dead = Array.isArray(elf.elf.dead) ? elf.elf.dead : [false, false, false];
         if (!Number.isFinite(idx) || idx < 0 || idx > 2) return;
-        const pendingKoIndex = Number.isFinite(elf.elf.pendingKoIndex) ? Number(elf.elf.pendingKoIndex) : null;
-        if (dead[idx] === true) return;
-        if (pendingKoIndex === idx) return;
-        const wasKoPick = pendingKoIndex != null;
-        if (pendingKoIndex != null) {
-          dead[pendingKoIndex] = true;
-          elf.elf.pendingKoIndex = null;
-        }
-        const spirit = elf.elf.spirits?.[idx];
-        const maxHp = Number(spirit?.maxHp) || 0;
-        if (maxHp <= 0) return;
-        elf.elf.dead = dead;
-        elf.elf.active = idx;
-        elf.elf.pendingPick = false;
-        elf.hp = maxHp;
-        elf.maxHp = maxHp;
-        elf.hpRules = Array.isArray(spirit?.hpRules) ? spirit.hpRules : [];
-        state.pendingElfPickByPlayer[pid] = false;
-        pushLog(`灵：${pid.toUpperCase()} 选择灵${idx + 1}（HP=${maxHp}，魂=${Number(elf.elf.soul) || 0}）`);
-        const enterEffects = (elf.hpRules ?? []).filter((r) => r?.hp === elf.hp && r.stop !== true).flatMap((r) => r.effects ?? []);
-        if (enterEffects.length) {
-          const other = player.fighters.find((x) => x.id !== elf.id);
-          const opp = state.players[oppId];
-          const oppMain = opp?.fighters?.[0];
-          const oppSup = opp?.fighters?.[1];
-          const startPower = new Map();
-          for (const f of [...player.fighters, ...opp.fighters]) startPower.set(f.id, Number(f.power) || 0);
-          const ctx = {
-            kind: "battle",
-            my: { playerId: pid, mainId: elf.id, supportId: other?.id, bothIds: [elf.id, other?.id].filter(Boolean) },
-            opp: { playerId: oppId, mainId: oppMain?.id, supportId: oppSup?.id, bothIds: [oppMain?.id, oppSup?.id].filter(Boolean) },
-            startPower,
-          };
-          const settlement = settleEffects({
-            ctx,
-            myCard: { fighterName: "精灵族", text: "", id: "elf-enter" },
-            oppCard: { fighterName: "对手", text: "", id: "elf-enter-opp" },
-            myEffects: enterEffects,
-            oppEffects: [],
-            myPlayer: player,
-            oppPlayer: opp,
-          });
-          const beforeSnapshot = snapshotFighters();
-          applyDeltas(state, settlement.hpDelta, settlement.powerDelta, beforeSnapshot, null, null, null);
-        }
-        if (wasKoPick) {
-          state.lastRound = null;
-          state.lastIntermissionEffect = null;
-          state.compareHold = false;
-          state.lastFlip = null;
-          render();
-          battleTurn();
-          return;
-        }
-        render();
+        sendMsg(C_ELF_PICK, { spiritIndex: idx });
       });
     });
 
-    els.p1BattleCount.textContent = `战斗牌库: ${p1.battleDeck.length}`;
-    els.p1ConstructCount.textContent = `构筑牌库: ${p1.constructionDeck.length}`;
-    els.p1ResolvedCount.textContent = `已结算: ${p1.resolvedPile.length}`;
-    els.p2BattleCount.textContent = `战斗牌库: ${p2.battleDeck.length}`;
-    els.p2ConstructCount.textContent = `构筑牌库: ${p2.constructionDeck.length}`;
-    els.p2ResolvedCount.textContent = `已结算: ${p2.resolvedPile.length}`;
+    const p1bc = p1.battleDeckCount ?? p1.battleDeck.length;
+    const p1cc = p1.constructionDeckCount ?? p1.constructionDeck.length;
+    const p1rc = p1.resolvedPileCount ?? p1.resolvedPile.length;
+    const p2bc = p2.battleDeckCount ?? p2.battleDeck.length;
+    const p2cc = p2.constructionDeckCount ?? p2.constructionDeck.length;
+    const p2rc = p2.resolvedPileCount ?? p2.resolvedPile.length;
+    els.p1BattleCount.textContent = `战斗牌库: ${p1bc}`;
+    els.p1ConstructCount.textContent = `构筑牌库: ${p1cc}`;
+    els.p1ResolvedCount.textContent = `已结算: ${p1rc}`;
+    els.p2BattleCount.textContent = `战斗牌库: ${p2bc}`;
+    els.p2ConstructCount.textContent = `构筑牌库: ${p2cc}`;
+    els.p2ResolvedCount.textContent = `已结算: ${p2rc}`;
 
     els.p1Decks.innerHTML =
       renderDeckList("战斗牌库（从上到下）", p1.battleDeck) +
