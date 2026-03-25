@@ -53,6 +53,8 @@ function createApp() {
     inputRoomCode: document.getElementById("input-room-code"),
     gameLayout: document.getElementById("game-layout"),
     headerSubtitle: document.getElementById("header-subtitle"),
+    connectionDot: document.getElementById("connection-dot"),
+    disconnectOverlay: document.getElementById("disconnect-overlay"),
     waitingBanner: document.getElementById("waiting-banner"),
   };
 
@@ -112,6 +114,7 @@ function createApp() {
 
     ws.addEventListener("open", () => {
       reconnectDelay = 1000;
+      setConnectionStatus("connected");
       if (onOpenAction) onOpenAction();
     });
 
@@ -122,8 +125,10 @@ function createApp() {
 
     ws.addEventListener("close", () => {
       if (clientPhase === "game" || clientPhase === "picking" || clientPhase === "ordering") {
-        showWaiting("连接断开，正在重连...");
+        setConnectionStatus("reconnecting");
         scheduleReconnect();
+      } else {
+        setConnectionStatus("disconnected");
       }
     });
 
@@ -166,6 +171,19 @@ function createApp() {
     if (els.headerSubtitle) els.headerSubtitle.textContent = text;
   }
 
+  function setConnectionStatus(status) {
+    // status: "connected" | "disconnected" | "reconnecting"
+    const dot = els.connectionDot;
+    if (dot) {
+      dot.className = `connection-dot ${status}`;
+      dot.title = status === "connected" ? "已连接" : status === "reconnecting" ? "重连中..." : "未连接";
+    }
+    const overlay = els.disconnectOverlay;
+    if (overlay) {
+      overlay.classList.toggle("hidden", status !== "reconnecting");
+    }
+  }
+
   // ─── State hydration (plain objects → Maps/Sets for rendering) ────────────
 
   function hydrateState(raw) {
@@ -204,13 +222,13 @@ function createApp() {
         myPlayerId = msg.playerId;
         clientPhase = "waiting_join";
         if (els.lobbyStatus) els.lobbyStatus.textContent = `房间码：${roomCode}  等待对手加入...`;
-        setHeaderInfo(`房间 ${roomCode} · ${myPlayerId.toUpperCase()}`);
+        setHeaderInfo(`房间 ${roomCode} · 你是 ${myPlayerId.toUpperCase()}`);
         break;
       }
       case S_ROOM_JOINED: {
         roomCode = msg.code;
         myPlayerId = msg.playerId;
-        setHeaderInfo(`房间 ${roomCode} · ${myPlayerId.toUpperCase()}`);
+        setHeaderInfo(`房间 ${roomCode} · 你是 ${myPlayerId.toUpperCase()}`);
         // If both players are present, go to picking
         clientPhase = "picking";
         hideLobby();
@@ -756,12 +774,21 @@ function createApp() {
           } style="grid-column:${colStart} / span 6"><div class="elf-pick-title">灵${i + 1}</div><div class="elf-pick-sub">血量${maxHp}</div></button>`;
         })
         .join("");
-      elfPickHtml = `
-        <div class="elf-pick-in-card">
-          <div class="elf-pick-hint">${pendingKoIndex != null ? "选择下一位灵" : "选择进入游戏的灵"}（魂=${soul}）</div>
-          <div class="elf-pick-row-grid" style="--hp-cells:30">${buttons}</div>
-        </div>
-      `;
+      if (myPlayerId && pidForElf !== myPlayerId) {
+        // Online: opponent sees waiting message instead of pick buttons
+        elfPickHtml = `
+          <div class="elf-pick-in-card">
+            <div class="elf-pick-hint">等待对方选择精灵入场...</div>
+          </div>
+        `;
+      } else {
+        elfPickHtml = `
+          <div class="elf-pick-in-card">
+            <div class="elf-pick-hint">${pendingKoIndex != null ? "选择下一位灵" : "选择进入游戏的灵"}（魂=${soul}）</div>
+            <div class="elf-pick-row-grid" style="--hp-cells:30">${buttons}</div>
+          </div>
+        `;
+      }
     }
 
     let powerDeltaHtml = "";
@@ -881,23 +908,45 @@ function createApp() {
     const p2cc = p2.constructionDeckCount ?? p2.constructionDeck.length;
     const p2rc = p2.resolvedPileCount ?? p2.resolvedPile.length;
     els.p1BattleCount.textContent = `战斗牌库: ${p1bc}`;
-    els.p1ConstructCount.textContent = `构筑牌库: ${p1cc}`;
     els.p1ResolvedCount.textContent = `已结算: ${p1rc}`;
     els.p2BattleCount.textContent = `战斗牌库: ${p2bc}`;
-    els.p2ConstructCount.textContent = `构筑牌库: ${p2cc}`;
     els.p2ResolvedCount.textContent = `已结算: ${p2rc}`;
+    if (myPlayerId) {
+      // Online: hide opponent's construction deck count
+      const myCC = myPlayerId === "p1" ? els.p1ConstructCount : els.p2ConstructCount;
+      const oppCC = myPlayerId === "p1" ? els.p2ConstructCount : els.p1ConstructCount;
+      myCC.textContent = `构筑牌库: ${myPlayerId === "p1" ? p1cc : p2cc}`;
+      oppCC.textContent = `构筑牌库: ?`;
+    } else {
+      els.p1ConstructCount.textContent = `构筑牌库: ${p1cc}`;
+      els.p2ConstructCount.textContent = `构筑牌库: ${p2cc}`;
+    }
 
-    els.p1Decks.innerHTML =
-      renderDeckList("战斗牌库（从上到下）", p1.battleDeck) +
-      renderDeckList("构筑牌库（从上到下）", p1.constructionDeck) +
-      renderDeckList("已结算（从上到下）", p1.resolvedPile);
-    els.p2Decks.innerHTML =
-      renderDeckList("战斗牌库（从上到下）", p2.battleDeck) +
-      renderDeckList("构筑牌库（从上到下）", p2.constructionDeck) +
-      renderDeckList("已结算（从上到下）", p2.resolvedPile);
-
-    els.p1Decks.classList.toggle("hidden", !state.showDecks);
-    els.p2Decks.classList.toggle("hidden", !state.showDecks);
+    if (myPlayerId) {
+      // Online mode: only show own decks
+      const myEls = myPlayerId === "p1" ? els.p1Decks : els.p2Decks;
+      const oppEls = myPlayerId === "p1" ? els.p2Decks : els.p1Decks;
+      const my = myPlayerId === "p1" ? p1 : p2;
+      myEls.innerHTML =
+        renderDeckList("战斗牌库（从上到下）", my.battleDeck) +
+        renderDeckList("构筑牌库（从上到下）", my.constructionDeck) +
+        renderDeckList("已结算（从上到下）", my.resolvedPile);
+      oppEls.innerHTML = `<div class="deck-title">对手牌库内容已隐藏</div>`;
+      myEls.classList.toggle("hidden", !state.showDecks);
+      oppEls.classList.toggle("hidden", !state.showDecks);
+    } else {
+      // Offline mode: show both
+      els.p1Decks.innerHTML =
+        renderDeckList("战斗牌库（从上到下）", p1.battleDeck) +
+        renderDeckList("构筑牌库（从上到下）", p1.constructionDeck) +
+        renderDeckList("已结算（从上到下）", p1.resolvedPile);
+      els.p2Decks.innerHTML =
+        renderDeckList("战斗牌库（从上到下）", p2.battleDeck) +
+        renderDeckList("构筑牌库（从上到下）", p2.constructionDeck) +
+        renderDeckList("已结算（从上到下）", p2.resolvedPile);
+      els.p1Decks.classList.toggle("hidden", !state.showDecks);
+      els.p2Decks.classList.toggle("hidden", !state.showDecks);
+    }
     syncRevelationSizing();
     requestAnimationFrame(() => requestAnimationFrame(positionHpArrows));
   }
@@ -1061,6 +1110,157 @@ function createApp() {
       };
 
       if (setup.step === "pick") {
+        // ── Online mode: simplified pick UI (own slots only) ──
+        if (clientPhase === "picking" || clientPhase === "waiting_picks") {
+          const picked = new Set([setup.myA, setup.myB].filter(Boolean));
+          const gridNames = names.slice(0, 12);
+          const slotLabelOnline = (v, fallback) =>
+            v
+              ? `<div class="setup-picked" draggable="true" data-my-pick-slot data-name="${escapeHtml(v)}">${headshotImgHtml(v, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(v)}</div></div>`
+              : `<div class="setup-slot-placeholder">${fallback}</div>`;
+          const poolCells = [];
+          for (let i = 0; i < 12; i++) {
+            const n = gridNames[i] ?? null;
+            if (!n) { poolCells.push(`<div class="setup-fighter placeholder"></div>`); continue; }
+            const disabled = picked.has(n);
+            poolCells.push(
+              `<div class="setup-fighter${disabled ? " disabled" : ""}" draggable="${!disabled}" data-pick-name="${escapeHtml(n)}">${headshotImgHtml(n, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(n)}</div></div>`
+            );
+          }
+          const waiting = clientPhase === "waiting_picks";
+          els.constructionPanel.innerHTML = `
+            <div class="construction-card">
+              <div><strong>选择战士</strong>：选择你的 2 位战士</div>
+              <div class="setup-pick-grid">
+                <div class="setup-side">
+                  <div class="setup-side-title"><strong>我方（${myPlayerId?.toUpperCase() ?? "?"}）</strong></div>
+                  <div class="setup-slots">
+                    <div class="setup-slot" data-my-slot="a">${slotLabelOnline(setup.myA, "空槽1")}</div>
+                    <div class="setup-slot" data-my-slot="b">${slotLabelOnline(setup.myB, "空槽2")}</div>
+                  </div>
+                </div>
+                <div class="setup-pool setup-pool-grid">
+                  ${poolCells.join("")}
+                </div>
+              </div>
+              <div class="construction-row">
+                <button type="button" id="online-pick-clear" ${waiting ? "disabled" : ""}>清空</button>
+                <div class="spacer"></div>
+                <button type="button" id="online-pick-confirm" ${!waiting && setup.myA && setup.myB ? "" : "disabled"}>${waiting ? "已提交，等待对手..." : "确认选择"}</button>
+              </div>
+            </div>
+          `;
+          if (!waiting) {
+            els.constructionPanel.querySelectorAll("[data-pick-name]").forEach((el) => {
+              el.addEventListener("click", () => {
+                if (el.classList.contains("disabled")) return;
+                const name = el.getAttribute("data-pick-name");
+                if (!setup.myA) setup.myA = name;
+                else if (!setup.myB) { if (name !== setup.myA) setup.myB = name; }
+                else { if (name !== setup.myA) setup.myB = name; }
+                render();
+              });
+            });
+            els.constructionPanel.querySelectorAll("[data-my-slot]").forEach((el) => {
+              el.addEventListener("click", () => {
+                const slot = el.getAttribute("data-my-slot");
+                if (slot === "a") { setup.myA = setup.myB; setup.myB = null; }
+                else setup.myB = null;
+                render();
+              });
+            });
+            // ── Drag-and-drop: pool fighters → slots ──
+            els.constructionPanel.querySelectorAll("[data-pick-name]").forEach((el) => {
+              el.addEventListener("dragstart", (ev) => {
+                if (el.classList.contains("disabled")) { ev.preventDefault(); return; }
+                ev.dataTransfer.setData("text/plain", `fighter:${el.getAttribute("data-pick-name")}`);
+                ev.dataTransfer.effectAllowed = "copy";
+                el.classList.add("dragging");
+              });
+              el.addEventListener("dragend", () => el.classList.remove("dragging"));
+            });
+            // ── Drag-and-drop: picked slot items (for reorder / remove) ──
+            els.constructionPanel.querySelectorAll("[data-my-pick-slot]").forEach((el) => {
+              el.addEventListener("dragstart", (ev) => {
+                const parent = el.closest("[data-my-slot]");
+                const slot = parent?.getAttribute("data-my-slot");
+                const name = el.getAttribute("data-name");
+                if (!slot || !name) { ev.preventDefault(); return; }
+                ev.dataTransfer.setData("text/plain", `slot:${slot}:${name}`);
+                ev.dataTransfer.effectAllowed = "move";
+                el.classList.add("dragging");
+              });
+              el.addEventListener("dragend", () => el.classList.remove("dragging"));
+            });
+            // ── Drop targets: slots ──
+            els.constructionPanel.querySelectorAll("[data-my-slot]").forEach((el) => {
+              el.addEventListener("dragover", (ev) => {
+                ev.preventDefault();
+                ev.dataTransfer.dropEffect = "copy";
+                el.classList.add("active");
+              });
+              el.addEventListener("dragleave", () => el.classList.remove("active"));
+              el.addEventListener("drop", (ev) => {
+                ev.preventDefault();
+                el.classList.remove("active");
+                const raw = ev.dataTransfer.getData("text/plain");
+                const targetSlot = el.getAttribute("data-my-slot");
+                if (raw.startsWith("fighter:")) {
+                  const name = raw.slice("fighter:".length);
+                  if (targetSlot === "a") {
+                    if (setup.myA && setup.myA !== name) { setup.myB = setup.myA; }
+                    setup.myA = name;
+                  } else {
+                    setup.myB = (name !== setup.myA) ? name : null;
+                  }
+                } else if (raw.startsWith("slot:")) {
+                  const parts = raw.split(":");
+                  const fromSlot = parts[1];
+                  const name = parts[2];
+                  if (fromSlot !== targetSlot) {
+                    // swap
+                    const tmp = targetSlot === "a" ? setup.myA : setup.myB;
+                    if (targetSlot === "a") { setup.myA = name; setup.myB = tmp; }
+                    else { setup.myB = name; setup.myA = tmp; }
+                  }
+                }
+                render();
+              });
+            });
+            // ── Drop on pool to remove from slot ──
+            const poolEl = els.constructionPanel.querySelector(".setup-pool");
+            if (poolEl) {
+              poolEl.addEventListener("dragover", (ev) => {
+                const raw = ev.dataTransfer.types.includes("text/plain") ? "ok" : "";
+                if (!raw) return;
+                ev.preventDefault();
+                ev.dataTransfer.dropEffect = "move";
+              });
+              poolEl.addEventListener("drop", (ev) => {
+                ev.preventDefault();
+                const raw = ev.dataTransfer.getData("text/plain");
+                if (!raw.startsWith("slot:")) return;
+                const parts = raw.split(":");
+                const fromSlot = parts[1];
+                if (fromSlot === "a") { setup.myA = setup.myB; setup.myB = null; }
+                else setup.myB = null;
+                render();
+              });
+            }
+
+            document.getElementById("online-pick-clear")?.addEventListener("click", () => {
+              setup.myA = null; setup.myB = null; render();
+            });
+            document.getElementById("online-pick-confirm")?.addEventListener("click", () => {
+              if (!setup.myA || !setup.myB) return;
+              sendMsg(C_PICK_FIGHTERS, { picks: [setup.myA, setup.myB] });
+              clientPhase = "waiting_picks";
+              render();
+            });
+          }
+          return;
+        }
+
         const slotLabel = (v, fallback) =>
           v
             ? `<div class="setup-picked" draggable="true" data-setup-pick="picked" data-name="${escapeHtml(v)}">${headshotImgHtml(
@@ -1244,6 +1444,49 @@ function createApp() {
           setup.p2b = null;
           render();
         });
+        return;
+      }
+
+      // ── Online mode: deck order UI ──
+      if (clientPhase === "ordering" || clientPhase === "waiting_order") {
+        const myPicks = setup.myPicks || [];
+        const topName = setup.topName || null;
+        const waiting = clientPhase === "waiting_order";
+        const pickCards = myPicks.map((name) => {
+          const n1 = cardName1(name);
+          const text = cardText(name);
+          const selected = topName === name ? " selected" : "";
+          return `
+            <div class="construction-choice selectable${selected}" data-top-pick="${escapeHtml(name)}">
+              <div class="choice-title">${escapeHtml(name)}${n1 ? ` · ${escapeHtml(n1)}` : "#1"}</div>
+              <pre>${escapeHtml(text)}</pre>
+            </div>
+          `;
+        });
+        els.constructionPanel.innerHTML = `
+          <div class="construction-card">
+            <div><strong>构筑起手</strong>：选择哪位战士的 #1 卡牌放在战斗牌堆顶部</div>
+            <div class="construction-row">${pickCards.join("")}</div>
+            <div class="construction-row">
+              <div class="spacer"></div>
+              <button type="button" id="online-order-confirm" ${!waiting && topName ? "" : "disabled"}>${waiting ? "已提交，等待对手..." : "确认顺序"}</button>
+            </div>
+          </div>
+        `;
+        if (!waiting) {
+          els.constructionPanel.querySelectorAll("[data-top-pick]").forEach((el) => {
+            el.addEventListener("click", () => {
+              setup.topName = el.getAttribute("data-top-pick");
+              render();
+            });
+          });
+          document.getElementById("online-order-confirm")?.addEventListener("click", () => {
+            if (!setup.topName) return;
+            sendMsg(C_DECK_ORDER, { topName: setup.topName });
+            clientPhase = "waiting_order";
+            render();
+          });
+        }
         return;
       }
 
@@ -1594,8 +1837,26 @@ function createApp() {
     }
 
     const panels = [];
-    panels.push(p1Choice ? renderChoice("p1", p1Choice) : renderDone("p1"));
-    panels.push(p2Choice ? renderChoice("p2", p2Choice) : renderDone("p2"));
+    const p1Active = p1Choice && typeof p1Choice === "object";
+    const p2Active = p2Choice && typeof p2Choice === "object";
+
+    if (myPlayerId) {
+      // Online mode: only show own construction panel
+      const myId = myPlayerId;
+      const oppId = myId === "p1" ? "p2" : "p1";
+      const myChoice = state.construction[myId];
+      const oppChoice = state.construction[oppId];
+      const myActive = myChoice && typeof myChoice === "object";
+      const oppActive = oppChoice && typeof oppChoice === "object";
+      panels.push(myActive ? renderChoice(myId, myChoice) : renderDone(myId));
+      panels.push(oppActive
+        ? `<div class="construction-card" data-player="${oppId}"><div><strong>${oppId.toUpperCase()}</strong> 构筑：等待对方完成构筑...</div></div>`
+        : renderDone(oppId));
+    } else {
+      // Offline mode: show both panels
+      panels.push(p1Active ? renderChoice("p1", p1Choice) : renderDone("p1"));
+      panels.push(p2Active ? renderChoice("p2", p2Choice) : renderDone("p2"));
+    }
     els.constructionPanel.innerHTML = panels.join("");
 
     els.constructionPanel.querySelectorAll(".construction-card").forEach((card) => {
@@ -1950,43 +2211,11 @@ function createApp() {
       });
       card.querySelector(`button[data-action="apply"]`).addEventListener("click", () => {
         if (!Number.isFinite(choice.insertPos)) return;
-        const beforeSnapshot = snapshotFighters();
-        applyConstructionChoice(state, playerId, pushLog);
-        const afterSnapshot = snapshotFighters();
-        let changed = false;
-        for (const [id, a] of afterSnapshot.entries()) {
-          const b = beforeSnapshot.get(id);
-          if (!b) continue;
-          if ((a.hp ?? 0) !== (b.hp ?? 0) || (a.power ?? 0) !== (b.power ?? 0)) {
-            changed = true;
-            break;
-          }
-        }
-        if (changed) state.lastIntermissionEffect = { before: beforeSnapshot, after: afterSnapshot };
-        const w = checkWinner(state);
-        if (w) {
-          state.phase = PHASE.GAME_OVER;
-          state.winner = w;
-          const isKoNow = (f) => {
-            if (f?.koByFlame === true) return true;
-            if (f?.name === "精灵族") return f?.elf?.gameKo === true;
-            return Array.isArray(f.koLines) && f.koLines.length > 0 ? f.koLines.includes(Number(f.hp) || 0) : Number(f.hp) <= Number(f.koLine);
-          };
-          const p1KO = state.players.p1.fighters.some(isKoNow);
-          const p2KO = state.players.p2.fighters.some(isKoNow);
-          const resLine = w === "draw" ? `平局` : w === "p1" ? `P1 胜 / P2 败` : `P2 胜 / P1 败`;
-          pushLog(`游戏结束：${resLine}（P1 ${p1KO ? "KO" : "未KO"}，P2 ${p2KO ? "KO" : "未KO"}）`);
-        } else if (!state.construction.p1 && !state.construction.p2) {
-          state.phase = PHASE.BATTLE;
-          state.awaitingConstruction = false;
-          state.round += 1;
-          state.turn = 1;
-          state.lastFlip = null;
-          state.lastRound = null;
-          state.compareHold = false;
-          pushLog(`构筑完成：回到战斗阶段`);
-        }
-        render();
+        sendMsg(C_CONSTRUCTION_CHOICE, {
+          insertIndex: choice.insertIndex,
+          insertPos: choice.insertPos,
+          bottomOrder: choice.bottomOrder,
+        });
       });
     });
   }
@@ -2014,404 +2243,8 @@ function createApp() {
     renderConstruction();
   }
 
-  function battleTurn() {
-    if (state.phase !== PHASE.BATTLE) return;
-    if (state.awaitingConstruction) return;
-    if (state.pendingGameOver) return;
-    const p1 = state.players.p1;
-    const p2 = state.players.p2;
-    if (Array.isArray(state.pendingDoubleQueue) && state.pendingDoubleQueue.length > 0) {
-      const pid = state.pendingDoubleQueue.shift();
-      const lf = state.lastFlip;
-      const p1Card = lf?.p1Card;
-      const p2Card = lf?.p2Card;
-      if (!pid || !p1Card || !p2Card) {
-        state.pendingDoubleQueue = [];
-        render();
-        return;
-      }
-      state.lastIntermissionEffect = null;
-      const beforeSnapshot = snapshotFighters();
-      pushLog(`土偶重生：结算第二次（${pid.toUpperCase()} ${formatCardLabel(pid === "p1" ? p1Card : p2Card)}）`);
-      const ctx = buildContextForBattle(p1, p2, p1Card, p2Card);
-      for (const f of [...p1.fighters, ...p2.fighters]) f.snakeFlipMark = null;
-      const p1Effects = ensureCardCompiled(p1Card);
-      const p2Effects = ensureCardCompiled(p2Card);
-      const settlement = settleEffects({
-        ctx,
-        myCard: p1Card,
-        oppCard: p2Card,
-        myEffects: p1Effects,
-        oppEffects: p2Effects,
-        myPlayer: p1,
-        oppPlayer: p2,
-        onlySide: pid,
-        guardAtStartById: lf?.guardAtStartById,
-      });
-      for (const line of settlement.log) pushLog(line);
-      if (settlement?.golemRebirthByPlayerId?.size) {
-        for (const x of settlement.golemRebirthByPlayerId) state.doubleNextByPlayer[x] = true;
-      }
-      const applied = applyDeltas(
-        state,
-        settlement.hpDelta,
-        settlement.powerDelta,
-        beforeSnapshot,
-        lf?.guardAtStartById,
-        settlement?.blockActiveByPlayerId ?? null,
-        settlement?.blockInnerByPlayerId ?? null
-      );
-      for (const line of applied?.log ?? []) pushLog(line);
-      const hpTraceById = applied?.hpTraceById ?? new Map();
-      const planEvents = [...(settlement.planEvents ?? []), ...(applied?.planEvents ?? [])];
-      if (settlement?.removeBothCardsFromGame === true) {
-        pushLog(`移除游戏：P1 ${formatCardLabel(p1Card)} / P2 ${formatCardLabel(p2Card)}`);
-        p1.resolvedPile = p1.resolvedPile.filter((c) => c !== p1Card);
-        p2.resolvedPile = p2.resolvedPile.filter((c) => c !== p2Card);
-      }
-      const afterSnapshot = snapshotFighters();
-      const guardBlocked = new Set([...(settlement?.guardBlockedByPlayerId ?? []), ...(applied?.guardBlockedByPlayerId ?? [])]);
-      const flipTriggered = settlement?.flipTriggeredByCardId && typeof settlement.flipTriggeredByCardId[Symbol.iterator] === "function" ? new Set(settlement.flipTriggeredByCardId) : new Set();
-      state.lastRound = { round: state.round, turn: state.turn, before: beforeSnapshot, after: afterSnapshot, hpTraceById, planEvents, guardBlockedByPlayerId: guardBlocked, flipTriggeredByCardId: flipTriggered };
-      for (const [id, a] of afterSnapshot.entries()) {
-        const b = beforeSnapshot.get(id);
-        if (!b) continue;
-        const dh = (a.hp ?? 0) - (b.hp ?? 0);
-        const dp = (a.power ?? 0) - (b.power ?? 0);
-        if (dh === 0 && dp === 0) continue;
-        const f = [...state.players.p1.fighters, ...state.players.p2.fighters].find((x) => x.id === id);
-        const name = f?.name ?? id;
-        const pid2 = String(id).split(":")[0];
-        const who = pid2 === "p2" ? "P2" : "P1";
-        const parts = [];
-        if (dh !== 0) parts.push(`HP ${dh > 0 ? "+" : ""}${dh}`);
-        if (dp !== 0) parts.push(`力量 ${dp > 0 ? "+" : ""}${dp}`);
-        pushLog(`结算变化：${who} ${name}（${parts.join("，")}）`);
-      }
-
-      if (!state.pendingDoubleQueue.length) {
-        const processElfRoundEnd = (playerId) => {
-          const player = state.players[playerId];
-          const elf = player?.fighters?.find?.((f) => f?.name === "精灵族");
-          if (!elf || !elf.elf) return;
-          if (elf.elf.gameKo === true) return;
-          const active = elf.elf.active;
-          const dead = Array.isArray(elf.elf.dead) ? elf.elf.dead : [false, false, false];
-          elf.elf.dead = dead;
-          if (active == null) {
-            state.pendingElfPickByPlayer[playerId] = dead.some((x) => x === false);
-            return;
-          }
-          if (dead[active] === true) return;
-          if (Number(elf.hp) > Number(elf.koLine)) return;
-          const alreadyPending = Number.isFinite(elf.elf.pendingKoIndex) && elf.elf.pendingKoIndex !== null;
-          if (alreadyPending) return;
-          elf.elf.pendingKoIndex = active;
-          elf.elf.soul = (Number(elf.elf.soul) || 0) + 1;
-          const hasAlive = dead.some((x, i) => i !== active && x === false);
-          if (hasAlive) {
-            state.pendingElfPickByPlayer[playerId] = true;
-            pushLog(`灵：${playerId.toUpperCase()} 灵${active + 1} 被KO（魂=${elf.elf.soul}），请选择下一位灵`);
-          } else {
-            dead[active] = true;
-            elf.elf.dead = dead;
-            elf.elf.pendingKoIndex = null;
-            elf.elf.active = null;
-            elf.elf.pendingPick = false;
-            elf.hp = 0;
-            elf.maxHp = 0;
-            elf.hpRules = [];
-            state.pendingElfPickByPlayer[playerId] = false;
-            pushLog(`灵：${playerId.toUpperCase()} 无存活灵，精灵族进入沉寂（不再受伤/回复）`);
-          }
-        };
-        if (state.pendingElfPickByPlayer) {
-          processElfRoundEnd("p1");
-          processElfRoundEnd("p2");
-        }
-      }
-
-      function isKoNow(fx) {
-        if (fx?.koByFlame === true) return true;
-        if (fx?.name === "精灵族") return fx?.elf?.gameKo === true;
-        if (Array.isArray(fx.koLines) && fx.koLines.length > 0) {
-          return fx.koLines.includes(Number(fx.hp) || 0);
-        }
-        return Number(fx.hp) <= Number(fx.koLine);
-      }
-      const p1KO = state.players.p1.fighters.some(isKoNow);
-      const p2KO = state.players.p2.fighters.some(isKoNow);
-      const flameKoP1 = settlement?.flameKoByPlayerId?.has?.("p1") === true;
-      const flameKoP2 = settlement?.flameKoByPlayerId?.has?.("p2") === true;
-      const winOnSelfKoP1 = settlement?.winOnSelfKoByPlayer?.get?.("p1") === true;
-      const winOnSelfKoP2 = settlement?.winOnSelfKoByPlayer?.get?.("p2") === true;
-      const p1ClaimWin = winOnSelfKoP1 && p1KO;
-      const p2ClaimWin = winOnSelfKoP2 && p2KO;
-
-      let w = checkWinner(state);
-      if (p1ClaimWin || p2ClaimWin) {
-        if (p1ClaimWin && p2ClaimWin) {
-          w = "draw";
-          pushLog(`特殊胜负：双方被KO且均触发“被KO则胜利”，最终为平局`);
-        } else if (p1ClaimWin) {
-          w = "p1";
-          pushLog(`特殊胜负：P1 被KO且触发“被KO则胜利”，最终 P1 获胜`);
-        } else {
-          w = "p2";
-          pushLog(`特殊胜负：P2 被KO且触发“被KO则胜利”，最终 P2 获胜`);
-        }
-      } else if ((flameKoP1 && !flameKoP2) || (flameKoP2 && !flameKoP1)) {
-        w = flameKoP1 ? "p2" : "p1";
-        pushLog(`特殊胜负：焰=5 判KO，忽略对方本回合KO判定，最终 ${w.toUpperCase()} 获胜`);
-      }
-      if (w) {
-        state.pendingGameOver = w;
-        const koP1 = p1KO ? "KO" : "未KO";
-        const koP2 = p2KO ? "KO" : "未KO";
-        const resLine = w === "draw" ? `平局` : w === "p1" ? `P1 胜 / P2 败` : `P2 胜 / P1 败`;
-        pushLog(`游戏结束！${resLine}（P1 ${koP1}，P2 ${koP2}；点击“确认结束”进入结束结算）`);
-        render();
-        return;
-      }
-
-      if (!state.pendingDoubleQueue.length) {
-        if (p1.battleDeck.length === 0 && p2.battleDeck.length === 0) {
-          state.awaitingConstruction = true;
-          pushLog(`战斗牌库结算完：点击“进入构筑”进入构筑阶段`);
-          render();
-          return;
-        }
-        state.turn += 1;
-      }
-      render();
-      return;
-    }
-
-    if (state.pendingElfPickByPlayer?.p1 || state.pendingElfPickByPlayer?.p2) return;
-    if (p1.battleDeck.length === 0 || p2.battleDeck.length === 0) return;
-    const plannedDoubleQueue = [];
-    if (state.doubleNextByPlayer?.p1 === true) {
-      plannedDoubleQueue.push("p1");
-      state.doubleNextByPlayer.p1 = false;
-    }
-    if (state.doubleNextByPlayer?.p2 === true) {
-      plannedDoubleQueue.push("p2");
-      state.doubleNextByPlayer.p2 = false;
-    }
-
-    state.lastIntermissionEffect = null;
-    const beforeSnapshot = snapshotFighters();
-    const p1Card = p1.battleDeck.shift();
-    const p2Card = p2.battleDeck.shift();
-    state.lastFlip = {
-      round: state.round,
-      turn: state.turn,
-      p1Card,
-      p2Card,
-      p1FlippedAtStart: p1Card?.flipped === true,
-      p2FlippedAtStart: p2Card?.flipped === true,
-    };
-    renderBattleReveal();
-    pushLog(`翻牌（轮次${state.round}回合${state.turn}）：P1 ${formatCardLabel(p1Card)} / P2 ${formatCardLabel(p2Card)}`);
-
-    const ctx = buildContextForBattle(p1, p2, p1Card, p2Card);
-    state.lastFlip.guardAtStartById = new Map([...p1.fighters, ...p2.fighters].map((f) => [f.id, f?.guard === true]));
-    for (const f of [...p1.fighters, ...p2.fighters]) f.snakeFlipMark = null;
-    const p1Effects = ensureCardCompiled(p1Card);
-    const p2Effects = ensureCardCompiled(p2Card);
-
-    const settlement = settleEffects({
-      ctx,
-      myCard: p1Card,
-      oppCard: p2Card,
-      myEffects: p1Effects,
-      oppEffects: p2Effects,
-      myPlayer: p1,
-      oppPlayer: p2,
-      guardAtStartById: state.lastFlip.guardAtStartById,
-    });
-
-    for (const line of settlement.log) pushLog(line);
-    if (settlement?.golemRebirthByPlayerId?.size) {
-      for (const x of settlement.golemRebirthByPlayerId) state.doubleNextByPlayer[x] = true;
-    }
-
-    const applied = applyDeltas(
-      state,
-      settlement.hpDelta,
-      settlement.powerDelta,
-      beforeSnapshot,
-      state.lastFlip.guardAtStartById,
-      settlement?.blockActiveByPlayerId ?? null,
-      settlement?.blockInnerByPlayerId ?? null
-    );
-    for (const line of applied?.log ?? []) pushLog(line);
-    const hpTraceById = applied?.hpTraceById ?? new Map();
-    const planEvents = [...(settlement.planEvents ?? []), ...(applied?.planEvents ?? [])];
-
-    if (settlement?.removeBothCardsFromGame === true) {
-      pushLog(`移除游戏：P1 ${formatCardLabel(p1Card)} / P2 ${formatCardLabel(p2Card)}`);
-    } else {
-      p1.resolvedPile.unshift(p1Card);
-      p2.resolvedPile.unshift(p2Card);
-    }
-    const afterSnapshot = snapshotFighters();
-    const guardBlocked = new Set([...(settlement?.guardBlockedByPlayerId ?? []), ...(applied?.guardBlockedByPlayerId ?? [])]);
-    const flipTriggered = settlement?.flipTriggeredByCardId && typeof settlement.flipTriggeredByCardId[Symbol.iterator] === "function" ? new Set(settlement.flipTriggeredByCardId) : new Set();
-    state.lastRound = { round: state.round, turn: state.turn, before: beforeSnapshot, after: afterSnapshot, hpTraceById, planEvents, guardBlockedByPlayerId: guardBlocked, flipTriggeredByCardId: flipTriggered };
-    for (const [id, a] of afterSnapshot.entries()) {
-      const b = beforeSnapshot.get(id);
-      if (!b) continue;
-      const dh = (a.hp ?? 0) - (b.hp ?? 0);
-      const dp = (a.power ?? 0) - (b.power ?? 0);
-      if (dh === 0 && dp === 0) continue;
-      const f = [...state.players.p1.fighters, ...state.players.p2.fighters].find((x) => x.id === id);
-      const name = f?.name ?? id;
-      const pid = String(id).split(":")[0];
-      const who = pid === "p2" ? "P2" : "P1";
-      const parts = [];
-      if (dh !== 0) parts.push(`HP ${dh > 0 ? "+" : ""}${dh}`);
-      if (dp !== 0) parts.push(`力量 ${dp > 0 ? "+" : ""}${dp}`);
-      pushLog(`结算变化：${who} ${name}（${parts.join("，")}）`);
-    }
-
-    if (plannedDoubleQueue.length) {
-      state.pendingDoubleQueue = plannedDoubleQueue;
-      render();
-      return;
-    }
-
-    const processElfRoundEnd = (playerId) => {
-      const player = state.players[playerId];
-      const elf = player?.fighters?.find?.((f) => f?.name === "精灵族");
-      if (!elf || !elf.elf) return;
-      if (elf.elf.gameKo === true) return;
-      const active = elf.elf.active;
-      const dead = Array.isArray(elf.elf.dead) ? elf.elf.dead : [false, false, false];
-      elf.elf.dead = dead;
-      if (active == null) {
-        state.pendingElfPickByPlayer[playerId] = dead.some((x) => x === false);
-        return;
-      }
-      if (dead[active] === true) return;
-      if (Number(elf.hp) > Number(elf.koLine)) return;
-      const alreadyPending = Number.isFinite(elf.elf.pendingKoIndex) && elf.elf.pendingKoIndex !== null;
-      if (alreadyPending) return;
-      elf.elf.pendingKoIndex = active;
-      elf.elf.soul = (Number(elf.elf.soul) || 0) + 1;
-      const hasAlive = dead.some((x, i) => i !== active && x === false);
-      if (hasAlive) {
-        state.pendingElfPickByPlayer[playerId] = true;
-        pushLog(`灵：${playerId.toUpperCase()} 灵${active + 1} 被KO（魂=${elf.elf.soul}），请选择下一位灵`);
-      } else {
-        dead[active] = true;
-        elf.elf.dead = dead;
-        elf.elf.pendingKoIndex = null;
-        elf.elf.active = null;
-        elf.elf.pendingPick = false;
-        elf.hp = 0;
-        elf.maxHp = 0;
-        elf.hpRules = [];
-        state.pendingElfPickByPlayer[playerId] = false;
-        pushLog(`灵：${playerId.toUpperCase()} 无存活灵，精灵族进入沉寂（不再受伤/回复）`);
-      }
-    };
-    if (state.pendingElfPickByPlayer) {
-      processElfRoundEnd("p1");
-      processElfRoundEnd("p2");
-    }
-
-    function isKoNow(fx) {
-      if (fx?.koByFlame === true) return true;
-      if (fx?.name === "精灵族") return fx?.elf?.gameKo === true;
-      if (Array.isArray(fx.koLines) && fx.koLines.length > 0) {
-        return fx.koLines.includes(Number(fx.hp) || 0);
-      }
-      return Number(fx.hp) <= Number(fx.koLine);
-    }
-    const p1KO = state.players.p1.fighters.some(isKoNow);
-    const p2KO = state.players.p2.fighters.some(isKoNow);
-    const flameKoP1 = settlement?.flameKoByPlayerId?.has?.("p1") === true;
-    const flameKoP2 = settlement?.flameKoByPlayerId?.has?.("p2") === true;
-    const winOnSelfKoP1 = settlement?.winOnSelfKoByPlayer?.get?.("p1") === true;
-    const winOnSelfKoP2 = settlement?.winOnSelfKoByPlayer?.get?.("p2") === true;
-    const p1ClaimWin = winOnSelfKoP1 && p1KO;
-    const p2ClaimWin = winOnSelfKoP2 && p2KO;
-
-    let w = checkWinner(state);
-    if (p1ClaimWin || p2ClaimWin) {
-      if (p1ClaimWin && p2ClaimWin) {
-        w = "draw";
-        pushLog(`特殊胜负：双方被KO且均触发“被KO则胜利”，最终为平局`);
-      } else if (p1ClaimWin) {
-        w = "p1";
-        pushLog(`特殊胜负：P1 被KO且触发“被KO则胜利”，最终 P1 获胜`);
-      } else {
-        w = "p2";
-        pushLog(`特殊胜负：P2 被KO且触发“被KO则胜利”，最终 P2 获胜`);
-      }
-    } else if ((flameKoP1 && !flameKoP2) || (flameKoP2 && !flameKoP1)) {
-      w = flameKoP1 ? "p2" : "p1";
-      pushLog(`特殊胜负：焰=5 判KO，忽略对方本回合KO判定，最终 ${w.toUpperCase()} 获胜`);
-    }
-    if (w) {
-      state.pendingGameOver = w;
-      const koP1 = p1KO ? "KO" : "未KO";
-      const koP2 = p2KO ? "KO" : "未KO";
-      const resLine =
-        w === "draw" ? `平局` : w === "p1" ? `P1 胜 / P2 败` : `P2 胜 / P1 败`;
-      pushLog(`游戏结束！${resLine}（P1 ${koP1}，P2 ${koP2}；点击“确认结束”进入结束结算）`);
-      render();
-      return;
-    }
-
-    if (p1.battleDeck.length === 0 && p2.battleDeck.length === 0) {
-      state.awaitingConstruction = true;
-      pushLog(`战斗牌库结算完：点击“进入构筑”进入构筑阶段`);
-      render();
-      return;
-    }
-
-    state.turn += 1;
-    render();
-  }
-
-  function enterConstructionNow() {
-    if (state.phase !== PHASE.BATTLE) return;
-    if (!state.awaitingConstruction) return;
-    if (state.pendingGameOver) return;
-    const entered = enterConstructionIfNeeded(state, pushLog);
-    state.awaitingConstruction = false;
-    if (entered) beginNextConstructionStep(state, pushLog);
-    render();
-  }
-
-  function confirmEndNow() {
-    if (state.phase !== PHASE.BATTLE) return;
-    if (!state.pendingGameOver) return;
-    state.phase = PHASE.GAME_OVER;
-    state.winner = state.pendingGameOver;
-    state.pendingGameOver = null;
-    render();
-  }
-
-  function newGame() {
-    if (data.fighterDefs.length < 2) return;
-    const names = data.fighterDefs.map((f) => f.name);
-    state = {
-      phase: PHASE.SETUP,
-      showDecks: false,
-      setup: { step: "pick", p1a: null, p1b: null, p2a: null, p2b: null, p1Built: [], p2Built: [] },
-      lastFlip: null,
-      lastRound: null,
-      awaitingConstruction: false,
-      pendingGameOver: null,
-      compareHold: false,
-    };
-    clearLog();
-    pushLog(`新开一局：进入初始化选择`);
-    render();
-  }
+  // All game logic (battleTurn, construction, confirmEnd) now runs on the server.
+  // Client sends messages via sendMsg() and receives state updates via handleServerMessage().
 
   async function loadText(url) {
     const res = await fetch(url, { cache: "no-store" });
@@ -2445,7 +2278,24 @@ function createApp() {
     data.fighterDefs = parseFighters(data.fightersTxt);
     for (const w of selfTestFighters(data.fighterDefs)) pushLog(`[自检] ${w}`);
     wireRulesDialog();
-    newGame();
+    // Show lobby on startup (online mode)
+    state.phase = PHASE.SETUP;
+    showLobby();
+    render();
+  }
+
+  // ─── Lobby buttons ────────────────────────────────────────────────────────
+  if (els.btnCreateRoom) {
+    els.btnCreateRoom.addEventListener("click", () => {
+      connectWs(() => sendMsg(C_CREATE_ROOM));
+    });
+  }
+  if (els.btnJoinRoom) {
+    els.btnJoinRoom.addEventListener("click", () => {
+      const code = els.inputRoomCode?.value?.trim();
+      if (!code) { window.alert("请输入房间码"); return; }
+      connectWs(() => sendMsg(C_JOIN_ROOM, { code }));
+    });
   }
 
   els.btnNewGame.addEventListener("click", () => {
@@ -2458,7 +2308,16 @@ function createApp() {
       const ok = window.confirm("游戏正在进行，是否中断并重开？");
       if (!ok) return;
     }
-    newGame();
+    // Return to lobby
+    if (ws) { ws.close(); ws = null; }
+    roomCode = null;
+    myPlayerId = null;
+    clientPhase = "lobby";
+    state = { phase: PHASE.SETUP };
+    setConnectionStatus("disconnected");
+    showLobby();
+    clearLog();
+    render();
   });
   els.btnToggleDecks.addEventListener("click", () => {
     state.showDecks = !state.showDecks;
@@ -2470,9 +2329,9 @@ function createApp() {
   els.btnOpenLog.addEventListener("click", () => {
     els.logDialog.showModal();
   });
-  els.btnNextBattle.addEventListener("click", battleTurn);
-  els.btnEnterConstruction.addEventListener("click", enterConstructionNow);
-  els.btnConfirmEnd.addEventListener("click", confirmEndNow);
+  els.btnNextBattle.addEventListener("click", () => { sendMsg(C_ADVANCE_BATTLE); els.btnNextBattle.disabled = true; });
+  els.btnEnterConstruction.addEventListener("click", () => { sendMsg(C_ADVANCE_BATTLE); els.btnEnterConstruction.disabled = true; });
+  els.btnConfirmEnd.addEventListener("click", () => sendMsg(C_CONFIRM_END));
   els.btnCompare.addEventListener("pointerdown", (e) => {
     if (els.btnCompare.disabled) return;
     state.compareHold = true;

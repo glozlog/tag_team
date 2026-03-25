@@ -17,7 +17,6 @@ import {
   applyDeltas,
   checkWinner,
   enterConstructionIfNeeded,
-  startConstructionForPlayer,
   applyConstructionChoice,
   beginNextConstructionStep,
 } from "./shared/game-logic.js";
@@ -26,10 +25,9 @@ import {
   C_CREATE_ROOM, C_JOIN_ROOM, C_PICK_FIGHTERS, C_DECK_ORDER,
   C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END,
   S_ROOM_CREATED, S_ROOM_JOINED, S_OPPONENT_JOINED,
-  S_OPPONENT_DISCONNECTED, S_OPPONENT_RECONNECTED,
-  S_PICKS_LOCKED, S_GAME_START, S_BATTLE_RESULT,
+  S_OPPONENT_DISCONNECTED,
+  S_PICKS_LOCKED, S_GAME_START,
   S_WAITING, S_ELF_PICK_NEEDED,
-  S_CONSTRUCTION_START, S_CONSTRUCTION_DONE,
   S_GAME_OVER, S_STATE_SYNC, S_ERROR,
   makeMsg, parseMsg,
 } from "./shared/protocol.js";
@@ -198,7 +196,7 @@ function serializeCard(c) {
   };
 }
 
-function serializePlayer(player, forPid, hideDecks) {
+function serializePlayer(player, hideDecks) {
   const p = {
     id: player.id,
     fighters: player.fighters.map(serializeFighter),
@@ -271,8 +269,8 @@ function serializeStateForPlayer(state, pid) {
       : null,
     compareHold: false,
     players: {
-      [pid]: serializePlayer(state.players[pid], pid, false),
-      [opp]: serializePlayer(state.players[opp], pid, true),
+      [pid]: serializePlayer(state.players[pid], false),
+      [opp]: serializePlayer(state.players[opp], true),
     },
     construction: {
       [pid]: state.construction[pid]
@@ -729,6 +727,12 @@ function onAdvanceBattle(ws) {
   if (!room || room.phase !== "playing") return;
   const state = room.gameState;
   if (!state || state.phase !== PHASE.BATTLE) return;
+
+  // Prevent double-advance: only one advance per turn
+  const turnKey = `${state.round}:${state.turn}`;
+  if (room._lastAdvancedTurn === turnKey && !state.awaitingConstruction
+      && !(Array.isArray(state.pendingDoubleQueue) && state.pendingDoubleQueue.length > 0)) return;
+  room._lastAdvancedTurn = turnKey;
 
   // Auto enter construction if awaiting
   if (state.awaitingConstruction && !state.pendingGameOver) {

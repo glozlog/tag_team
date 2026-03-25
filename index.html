@@ -9,7 +9,8 @@
   <body>
     <header class="app-header">
       <div class="app-title">tagteam</div>
-      <div class="app-subtitle">本地测试版 UI</div>
+      <div class="app-subtitle" id="header-subtitle">在线对战</div>
+      <div class="connection-dot disconnected" id="connection-dot" title="未连接"></div>
       <div class="app-actions">
         <button id="btn-toggle-decks" type="button">显示牌库</button>
         <button id="btn-open-log" type="button">对局日志</button>
@@ -17,7 +18,33 @@
       </div>
     </header>
 
-    <main class="layout">
+    <!-- Lobby overlay -->
+    <section id="lobby" class="lobby">
+      <div class="lobby-inner">
+        <h2>tagteam 在线对战</h2>
+        <div class="lobby-row">
+          <button id="btn-create-room" type="button">创建房间</button>
+        </div>
+        <div class="lobby-row">
+          <input id="input-room-code" type="text" placeholder="输入房间码" maxlength="6" autocomplete="off" />
+          <button id="btn-join-room" type="button">加入房间</button>
+        </div>
+        <div id="lobby-status" class="lobby-status"></div>
+      </div>
+    </section>
+
+    <!-- Disconnect overlay -->
+    <div id="disconnect-overlay" class="disconnect-overlay hidden">
+      <div class="disconnect-inner">
+        <div class="disconnect-spinner"></div>
+        <div class="disconnect-text">连接断开，正在重连...</div>
+      </div>
+    </div>
+
+    <!-- Waiting banner (shown over game area) -->
+    <div id="waiting-banner" class="waiting-banner hidden"></div>
+
+    <main class="layout hidden" id="game-layout">
       <section class="left">
         <div class="phase-row">
           <button id="btn-new-game" type="button">新开一局</button>
