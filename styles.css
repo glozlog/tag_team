@@ -94,6 +94,12 @@ button:disabled {
   gap: 12px;
 }
 
+/* When current player is P2, swap left/right so "me" is always on the left */
+body.view-swapped #player-p1 { order: 2; }
+body.view-swapped #player-p2 { order: 1; }
+body.view-swapped .battle-card[data-side="P1"] { order: 2; }
+body.view-swapped .battle-card[data-side="P2"] { order: 1; }
+
 .player {
   border: 1px solid #20283a;
   border-radius: 12px;

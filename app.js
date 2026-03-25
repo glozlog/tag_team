@@ -171,6 +171,21 @@ function createApp() {
     if (els.headerSubtitle) els.headerSubtitle.textContent = text;
   }
 
+  function applyViewSwap() {
+    // When myPlayerId is "p2", swap left/right so "me" is always on the left
+    document.body.classList.toggle("view-swapped", myPlayerId === "p2");
+    // Update player name labels
+    const p1Label = document.querySelector("#player-p1 .player-name");
+    const p2Label = document.querySelector("#player-p2 .player-name");
+    if (myPlayerId) {
+      if (p1Label) p1Label.textContent = myPlayerId === "p1" ? "我方（P1）" : "对手（P1）";
+      if (p2Label) p2Label.textContent = myPlayerId === "p2" ? "我方（P2）" : "对手（P2）";
+    } else {
+      if (p1Label) p1Label.textContent = "P1";
+      if (p2Label) p2Label.textContent = "P2";
+    }
+  }
+
   function setConnectionStatus(status) {
     // status: "connected" | "disconnected" | "reconnecting"
     const dot = els.connectionDot;
@@ -223,12 +238,14 @@ function createApp() {
         clientPhase = "waiting_join";
         if (els.lobbyStatus) els.lobbyStatus.textContent = `房间码：${roomCode}  等待对手加入...`;
         setHeaderInfo(`房间 ${roomCode} · 你是 ${myPlayerId.toUpperCase()}`);
+        applyViewSwap();
         break;
       }
       case S_ROOM_JOINED: {
         roomCode = msg.code;
         myPlayerId = msg.playerId;
         setHeaderInfo(`房间 ${roomCode} · 你是 ${myPlayerId.toUpperCase()}`);
+        applyViewSwap();
         // If both players are present, go to picking
         clientPhase = "picking";
         hideLobby();
@@ -2315,6 +2332,7 @@ function createApp() {
     clientPhase = "lobby";
     state = { phase: PHASE.SETUP };
     setConnectionStatus("disconnected");
+    applyViewSwap();
     showLobby();
     clearLog();
     render();

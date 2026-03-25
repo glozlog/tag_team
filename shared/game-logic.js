@@ -2480,11 +2480,21 @@ function applyDeltas(state, hpDelta, powerDelta, startSnapshot, guardAtStartById
       if (triggered) {
         if (triggered.stop === true) {
           stop = true;
+          extraLog.push(`HP规则：${f.name} HP=${f.hp}（卡）`);
         } else {
+          extraLog.push(`HP规则：${f.name} HP=${f.hp}（${triggered.effect}）`);
           const hpRuleEffects = triggered.effects ?? [];
           const ownerPid = String(f.id).startsWith("p2:") ? "p2" : "p1";
           const sc = buildStateCtx(ownerPid);
-          const ctx = sc.kind === "state" ? { kind: "state", my: sc.my, opp: sc.opp, startPower: sc.startPower } : sc;
+          // HP rule effects target relative to the triggering fighter,
+          // not the current battle's main attacker.
+          const otherId = sc.myPlayer.fighters.find((x) => x.id !== f.id)?.id ?? sc.my.supportId;
+          const ctx = {
+            kind: "state",
+            my: { ...sc.my, mainId: f.id, supportId: otherId, bothIds: [f.id, otherId].filter(Boolean) },
+            opp: sc.opp,
+            startPower: sc.startPower,
+          };
           const playerMap = sc.myPlayer.fightersByName;
           const poisonQueue = [];
           const runtime = {
@@ -2813,6 +2823,77 @@ function beginNextConstructionStep(state, pushLog) {
   }
 }
 
+/**
+ * Trigger HP rules at a fighter's current HP value (e.g. after elf spirit pick).
+ * Returns { log: string[], planEvents: [] }.
+ */
+function triggerHpRulesAtCurrentHp(state, fighterId, pushLog) {
+  const fighters = [...state.players.p1.fighters, ...state.players.p2.fighters];
+  const f = fighters.find((x) => x.id === fighterId);
+  if (!f || !Array.isArray(f.hpRules) || f.hpRules.length === 0) return;
+  const triggered = f.hpRules.find((r) => r.hp === f.hp);
+  if (!triggered || triggered.stop === true) return;
+
+  const ownerPid = String(f.id).startsWith("p2:") ? "p2" : "p1";
+  const myPlayer = state.players[ownerPid];
+  const oppPid = ownerPid === "p1" ? "p2" : "p1";
+  const oppPlayer = state.players[oppPid];
+  const fighterById = new Map(fighters.map((x) => [x.id, x]));
+  const playerMap = myPlayer.fightersByName;
+  const otherId = myPlayer.fighters.find((x) => x.id !== f.id)?.id ?? null;
+  const startPower = new Map(fighters.map((x) => [x.id, Number(x.power) || 0]));
+
+  const ctx = {
+    kind: "state",
+    my: { playerId: ownerPid, mainId: f.id, supportId: otherId, bothIds: [f.id, otherId].filter(Boolean) },
+    opp: {
+      playerId: oppPid,
+      mainId: oppPlayer.fighters[0]?.id,
+      supportId: oppPlayer.fighters[1]?.id,
+      bothIds: oppPlayer.fighters.map((x) => x.id),
+    },
+    startPower,
+  };
+
+  pushLog(`HP规则：${f.name} HP=${f.hp}（${triggered.effect}）`);
+
+  const hpRuleEffects = triggered.effects ?? [];
+  for (const e of hpRuleEffects) {
+    if (!e) continue;
+    if (e.type === "linked") {
+      for (const x of e.inner ?? []) applySimpleEffect(x);
+      continue;
+    }
+    applySimpleEffect(e);
+  }
+
+  function applySimpleEffect(e) {
+    if (!e) return;
+    if (e.type === "power") {
+      const ids = targetToFighterIds(ctx, e.target, playerMap);
+      for (const id of ids) {
+        const t = fighterById.get(id);
+        if (t) {
+          t.power = Math.max(0, (Number(t.power) || 0) + (Number(e.amount) || 0));
+          pushLog(`  → ${t.name} 力量${e.amount > 0 ? "+" : ""}${e.amount}`);
+        }
+      }
+    }
+    if (e.type === "heal") {
+      const amount = Number(e.amount) || 0;
+      const ids = targetToFighterIds(ctx, e.target, playerMap);
+      for (const id of ids) {
+        const t = fighterById.get(id);
+        if (t) {
+          const before = t.hp;
+          t.hp = Math.min(t.maxHp, t.hp + amount);
+          if (t.hp !== before) pushLog(`  → ${t.name} HP${t.hp - before > 0 ? "+" : ""}${t.hp - before}`);
+        }
+      }
+    }
+  }
+}
+
 export {
   nowTime,
   formatCardLabel,
@@ -2829,4 +2910,5 @@ export {
   startConstructionForPlayer,
   applyConstructionChoice,
   beginNextConstructionStep,
+  triggerHpRulesAtCurrentHp,
 };

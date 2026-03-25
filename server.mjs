@@ -19,6 +19,7 @@ import {
   enterConstructionIfNeeded,
   applyConstructionChoice,
   beginNextConstructionStep,
+  triggerHpRulesAtCurrentHp,
 } from "./shared/game-logic.js";
 
 import {
@@ -579,6 +580,10 @@ function handleElfPick(room, playerId, spiritIndex) {
     elf.hpRules = spirit.hpRules ?? [];
   }
   pushLog(`灵：${playerId.toUpperCase()} 选择灵${spiritIndex + 1}（HP=${elf.hp}）`);
+
+  // Trigger HP rules at initial HP (e.g. 灵1 HP=3 → 辅助力量+1)
+  triggerHpRulesAtCurrentHp(state, elf.id, pushLog);
+
   return true;
 }
 
