@@ -7,6 +7,7 @@ export const C_ADVANCE_BATTLE = "C_ADVANCE_BATTLE";
 export const C_ELF_PICK = "C_ELF_PICK";
 export const C_CONSTRUCTION_CHOICE = "C_CONSTRUCTION_CHOICE";
 export const C_CONFIRM_END = "C_CONFIRM_END";
+export const C_CONFIRM_INSERT_DISPLAY = "C_CONFIRM_INSERT_DISPLAY";
 
 // Server → Client message types
 export const S_ROOM_CREATED = "S_ROOM_CREATED";

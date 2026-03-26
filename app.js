@@ -8,7 +8,7 @@ import {
 
 import {
   C_CREATE_ROOM, C_JOIN_ROOM, C_PICK_FIGHTERS, C_DECK_ORDER,
-  C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END,
+  C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END, C_CONFIRM_INSERT_DISPLAY,
   S_ROOM_CREATED, S_ROOM_JOINED, S_OPPONENT_JOINED,
   S_OPPONENT_DISCONNECTED, S_OPPONENT_RECONNECTED,
   S_PICKS_LOCKED, S_GAME_START,
@@ -56,6 +56,9 @@ function createApp() {
     connectionDot: document.getElementById("connection-dot"),
     disconnectOverlay: document.getElementById("disconnect-overlay"),
     waitingBanner: document.getElementById("waiting-banner"),
+    onInsertOverlay: document.getElementById("on-insert-overlay"),
+    onInsertContent: document.getElementById("on-insert-content"),
+    btnConfirmInsert: document.getElementById("btn-confirm-insert"),
   };
 
   const data = {
@@ -335,6 +338,7 @@ function createApp() {
           order: "等待对方排列起手牌堆...",
           elf_pick: "等待对方选择精灵入场...",
           construction: "等待对方完成构筑...",
+          battle_flip: "等待对方翻牌...",
         };
         showWaiting(labels[msg.action] || "等待对方操作...");
         break;
@@ -418,13 +422,15 @@ function createApp() {
       state?.lastRound?.turn === state?.turn &&
       state?.lastRound?.flipTriggeredByCardId?.has?.(card.id) === true;
     if (card.fighterName === "郑一嫂" && Number(card.cardNo) === 1)
-      return `船0~7攻击；8~15回复2；20群伤至1；战船+1${showFlipHint ? "（触发翻转）" : ""}`;
+      return `船0~7攻击；8~15回复2；20群伤至1；战船+1${showFlipHint ? "（本回合翻转）" : ""}`;
     if (card.fighterName === "派克帮" && Number(card.cardNo) === 1)
-      return `警在己方：攻击&交警；警在对方：获得警&力量同时+1${showFlipHint ? "（触发翻转）" : ""}`;
+      return `警在己方：攻击&交警；警在对方：获得警&力量同时+1${showFlipHint ? "（本回合翻转）" : ""}`;
     const t = card.text || "";
     let shownFlipped = card.flipped === true;
     const lf = state?.lastFlip;
-    if (lf?.p1Card?.id && lf.p1Card.id === card.id) shownFlipped = lf.p1FlippedAtStart === true;
+    if (showFlipHint) {
+      shownFlipped = true;
+    } else if (lf?.p1Card?.id && lf.p1Card.id === card.id) shownFlipped = lf.p1FlippedAtStart === true;
     else if (lf?.p2Card?.id && lf.p2Card.id === card.id) shownFlipped = lf.p2FlippedAtStart === true;
     const idx = t.indexOf("//");
     if (idx >= 0) {
@@ -432,10 +438,10 @@ function createApp() {
       const after = t.slice(idx + 2).trim();
       if (after) {
         const base = shownFlipped === true ? `${after} // ${before}` : `${before} // ${after}`;
-        return `${base}${showFlipHint ? "（触发翻转）" : ""}`;
+        return `${base}${showFlipHint ? "（本回合翻转）" : ""}`;
       }
     }
-    return `${t || "-"}${showFlipHint ? "（触发翻转）" : ""}`;
+    return `${t || "-"}${showFlipHint ? "（本回合翻转）" : ""}`;
   }
 
   function cardTitleHtml(card) {
@@ -1044,7 +1050,7 @@ function createApp() {
         .map((e) => {
           const source = e.source === "hpRule" ? `HP${e.triggerHp ?? ""}` : "卡";
           const title = `${source}实施`;
-          const body = e.result === "empty" ? "无可实施" : String(e.planText ?? "").trim();
+          const body = e.result === "not_attacked" ? "未被攻击" : e.result === "empty" ? "无可实施" : String(e.planText ?? "").trim();
           return `<div class="plan-mini"><div class="plan-mini-title">${escapeHtml(title)}</div><div class="plan-mini-body">${escapeHtml(body || "-")}</div></div>`;
         })
         .join("");
@@ -2253,11 +2259,32 @@ function createApp() {
     els.btnConfirmEnd.disabled = !pendingEnd;
   }
 
+  function renderOnInsertOverlay() {
+    const show = state.pendingOnInsertDisplay && Array.isArray(state.onInsertSummary) && state.onInsertSummary.length > 0;
+    els.onInsertOverlay.classList.toggle("hidden", !show);
+    if (!show) return;
+    els.btnConfirmInsert.disabled = false;
+    let html = "";
+    for (const entry of state.onInsertSummary) {
+      const changesHtml = entry.changes.map((c) => {
+        const isNeg = c.detail.includes("-");
+        return `<div class="entry-change${isNeg ? " negative" : ""}">${c.name}：${c.detail}</div>`;
+      }).join("");
+      html += `<div class="on-insert-entry">
+        <div class="entry-header">${entry.playerId.toUpperCase()} 插入 ${entry.cardLabel}</div>
+        <div class="entry-effect">入库时：${entry.effectText}</div>
+        ${changesHtml}
+      </div>`;
+    }
+    els.onInsertContent.innerHTML = html;
+  }
+
   function render() {
     renderControls();
     renderBattleReveal();
     renderPlayers();
     renderConstruction();
+    renderOnInsertOverlay();
   }
 
   // All game logic (battleTurn, construction, confirmEnd) now runs on the server.
@@ -2350,6 +2377,10 @@ function createApp() {
   els.btnNextBattle.addEventListener("click", () => { sendMsg(C_ADVANCE_BATTLE); els.btnNextBattle.disabled = true; });
   els.btnEnterConstruction.addEventListener("click", () => { sendMsg(C_ADVANCE_BATTLE); els.btnEnterConstruction.disabled = true; });
   els.btnConfirmEnd.addEventListener("click", () => sendMsg(C_CONFIRM_END));
+  els.btnConfirmInsert.addEventListener("click", () => {
+    sendMsg(C_CONFIRM_INSERT_DISPLAY);
+    els.btnConfirmInsert.disabled = true;
+  });
   els.btnCompare.addEventListener("pointerdown", (e) => {
     if (els.btnCompare.disabled) return;
     state.compareHold = true;

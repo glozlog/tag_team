@@ -601,6 +601,9 @@ function parseEffect(effectText) {
   }
 
   if (!s0.startsWith("如果") && !s0.startsWith("如")) {
+    const policeToOther = /将警交给另一方的主攻$/.exec(sKeyAll);
+    if (policeToOther) return { type: "policeMove", raw: s0, to: "otherMain" };
+
     const policeToOppMain = /将警交给对方主攻$/.exec(sKeyAll);
     if (policeToOppMain) return { type: "policeMove", raw: s0, to: "oppMain" };
 
@@ -639,7 +642,7 @@ function parseEffect(effectText) {
 
   if (headKey === "蛇翻面") return { type: "snakeFlip", raw: s0 };
 
-  const powerIfPolice = /^有警的战士力量\+(\d+)$/.exec(headKey);
+  const powerIfPolice = /^回合初有警的战士力量\+(\d+)$/.exec(headKey);
   if (powerIfPolice) return { type: "powerToPoliceOwner", raw: s0, amount: Number(powerIfPolice[1]) };
 
   if (headKey === "取消回复效果") return { type: "cancelOpponentHeal", raw: s0 };
@@ -1598,7 +1601,14 @@ function settleEffects({
       return;
     }
     if (effect.type === "policeMove") {
-      const targetId = effect.to === "oppMain" ? sideCtx.opp.mainId : sideCtx.my.mainId;
+      let targetId;
+      if (effect.to === "otherMain") {
+        const currentOwner = [...fighterById.values()].find((x) => x.police === true);
+        const currentOwnerPid = currentOwner ? String(currentOwner.id).split(":")[0] : null;
+        targetId = currentOwnerPid === sideCtx.my.playerId ? sideCtx.opp.mainId : sideCtx.my.mainId;
+      } else {
+        targetId = effect.to === "oppMain" ? sideCtx.opp.mainId : sideCtx.my.mainId;
+      }
       for (const x of fighterById.values()) x.police = false;
       const t = fighterById.get(targetId);
       if (t) t.police = true;
@@ -1626,6 +1636,8 @@ function settleEffects({
         runtime.card.flipped = true;
         if (runtime?.flipTriggeredByCardId && typeof runtime.flipTriggeredByCardId.add === "function" && runtime.card.id)
           runtime.flipTriggeredByCardId.add(runtime.card.id);
+        const cardLabel = runtime.card.cardName ? `${runtime.card.fighterName} · ${runtime.card.cardName}` : `${runtime.card.fighterName}#${runtime.card.cardNo}`;
+        log.push(`${runtime?.prefix ?? ""}翻转：${cardLabel} 本回合翻转生效`);
       }
       return;
     }
@@ -1900,7 +1912,8 @@ function settleEffects({
     if (effect.type === "powerToPoliceOwner") {
       const amount = Number(effect.amount) || 0;
       if (!amount) return;
-      const owner = [...fighterById.values()].find((x) => x.police === true);
+      const ownerId = runtime?.startPoliceOwnerFighterId ?? null;
+      const owner = ownerId ? fighterById.get(ownerId) : null;
       if (!owner) return;
       queuePower(owner.id, amount, linkId ?? null);
       return;
@@ -1961,6 +1974,30 @@ function settleEffects({
       return;
     }
     if (effect.type === "conditional") {
+      // 米莱狄 special: "如果被攻击，实施计划" — explicit feedback for all branches
+      const isMiladyAttackPlan = effect.condRaw && /被攻击/.test(effect.condRaw)
+        && effect.inner?.length === 1 && effect.inner[0]?.type === "planExecute"
+        && playerMap.get("米莱狄");
+      if (isMiladyAttackPlan) {
+        const prefix = runtime?.prefix ?? "";
+        const miladyRef = playerMap.get("米莱狄");
+        const milady = miladyRef ? fighterById.get(miladyRef.id) : null;
+        const attacked = condOk(effect, sideCtx, runtime);
+        if (!attacked) {
+          log.push(`${prefix}如果被攻击，实施计划：未被攻击`);
+          planEvents.push({ playerId: sideCtx.my.playerId, source: "card", kind: "execute", planNo: null, planText: "未被攻击", result: "not_attacked" });
+          return;
+        }
+        const plan = milady?.plan;
+        if (!plan || !Array.isArray(plan.ready) || plan.ready.length === 0) {
+          log.push(`${prefix}如果被攻击，实施计划：被攻击但无计划可实施`);
+          planEvents.push({ playerId: sideCtx.my.playerId, source: "card", kind: "execute", planNo: null, planText: "被攻击但无计划可实施", result: "empty" });
+          return;
+        }
+        // Attacked and has ready plans — execute plan
+        applyAtomicEffect(sideCtx, effect.inner[0], canceledSelf, opponentBlockSuccess, blockSuccess, playerMap, queuePower, runtime, linkId);
+        return;
+      }
       if (condOk(effect, sideCtx, runtime)) {
         for (const inner of effect.inner)
           applyAtomicEffect(sideCtx, inner, canceledSelf, opponentBlockSuccess, blockSuccess, playerMap, queuePower, runtime, linkId);
@@ -2041,6 +2078,13 @@ function settleEffects({
             : null;
         for (const inner of oppBlockInner) {
           applyAtomicEffect(defCtx, inner, false, false, true, defPlayerMap, defQueuePower, defRuntime, linkId);
+        }
+        if (defRuntime?.card?.flipped === true && String(defRuntime.card.text ?? "").includes("//")) {
+          const flippedEffects = parseCardEffects(defRuntime.card.text, defRuntime.card);
+          for (const fe of flippedEffects) {
+            if (fe.type === "block" || fe.type === "onInsert" || fe.type === "afterOppExecuteLowHp") continue;
+            applyAtomicEffect(defCtx, fe, false, false, true, defPlayerMap, defQueuePower, defRuntime, linkId);
+          }
         }
         return;
       }

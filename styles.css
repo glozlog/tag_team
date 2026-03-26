@@ -1655,3 +1655,81 @@ input[type="radio"] {
   color: #c0d0e8;
   font-size: 14px;
 }
+
+/* ─── On-insert effect overlay ─────────────────────────────────────────────── */
+
+.on-insert-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.on-insert-overlay.hidden {
+  display: none;
+}
+
+.on-insert-inner {
+  background: #151a24;
+  border: 1px solid #2a3346;
+  border-radius: 12px;
+  padding: 24px 36px;
+  text-align: center;
+  min-width: 320px;
+  max-width: 480px;
+}
+
+.on-insert-inner h3 {
+  color: #e8d8a0;
+  margin: 0 0 16px;
+  font-size: 18px;
+}
+
+.on-insert-entry {
+  background: #1a2030;
+  border: 1px solid #2a3346;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.on-insert-entry .entry-header {
+  color: #8ba0c0;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.on-insert-entry .entry-effect {
+  color: #e8d8a0;
+  font-size: 14px;
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+.on-insert-entry .entry-change {
+  color: #a0c8a0;
+  font-size: 13px;
+}
+
+.on-insert-entry .entry-change.negative {
+  color: #c8a0a0;
+}
+
+#btn-confirm-insert {
+  margin-top: 8px;
+  padding: 8px 32px;
+  background: #2a3a50;
+  color: #c0d0e8;
+  border: 1px solid #3a4a60;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+#btn-confirm-insert:hover {
+  background: #3a4a60;
+}

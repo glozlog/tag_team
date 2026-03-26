@@ -24,7 +24,7 @@ import {
 
 import {
   C_CREATE_ROOM, C_JOIN_ROOM, C_PICK_FIGHTERS, C_DECK_ORDER,
-  C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END,
+  C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END, C_CONFIRM_INSERT_DISPLAY,
   S_ROOM_CREATED, S_ROOM_JOINED, S_OPPONENT_JOINED,
   S_OPPONENT_DISCONNECTED,
   S_PICKS_LOCKED, S_GAME_START,
@@ -289,6 +289,8 @@ function serializeStateForPlayer(state, pid) {
     },
     winner: state.winner,
     doubleNextByPlayer: state.doubleNextByPlayer,
+    pendingOnInsertDisplay: state.pendingOnInsertDisplay || false,
+    onInsertSummary: state.onInsertSummary || null,
   };
 }
 
@@ -602,6 +604,7 @@ function handleMessage(ws, raw) {
     case C_ADVANCE_BATTLE: return onAdvanceBattle(ws, msg);
     case C_ELF_PICK: return onElfPick(ws, msg);
     case C_CONSTRUCTION_CHOICE: return onConstructionChoice(ws, msg);
+    case C_CONFIRM_INSERT_DISPLAY: return onConfirmInsertDisplay(ws);
     case C_CONFIRM_END: return onConfirmEnd(ws, msg);
   }
 }
@@ -716,6 +719,7 @@ function onDeckOrder(ws, msg) {
     };
     room.gameState = createInitialState(fighterPoolByName, picksByPlayer, startTopByPlayer);
     room.phase = "playing";
+    room.battleReady = { p1: false, p2: false };
     room.log = [];
     roomPushLog(room, `对局开始`);
     sendEach(room, S_GAME_START, (pid) => ({
@@ -729,35 +733,42 @@ function onDeckOrder(ws, msg) {
 
 function onAdvanceBattle(ws) {
   const room = rooms.get(ws._roomCode);
-  if (!room || room.phase !== "playing") return;
+  const pid = ws._playerId;
+  if (!room || !pid || room.phase !== "playing") return;
   const state = room.gameState;
   if (!state || state.phase !== PHASE.BATTLE) return;
 
-  // Prevent double-advance: only one advance per turn
-  const turnKey = `${state.round}:${state.turn}`;
-  if (room._lastAdvancedTurn === turnKey && !state.awaitingConstruction
-      && !(Array.isArray(state.pendingDoubleQueue) && state.pendingDoubleQueue.length > 0)) return;
-  room._lastAdvancedTurn = turnKey;
+  // Initialize battleReady if missing
+  if (!room.battleReady) room.battleReady = { p1: false, p2: false };
+
+  // Prevent double-click from the same player
+  if (room.battleReady[pid]) return;
+  room.battleReady[pid] = true;
+
+  const opp = oppOf(pid);
+
+  // If opponent hasn't clicked yet, show waiting and notify opponent
+  if (!room.battleReady[opp]) {
+    send(room.sockets[pid], S_WAITING, { action: "battle_flip" });
+    return;
+  }
+
+  // Both players ready — reset for next turn
+  room.battleReady = { p1: false, p2: false };
 
   // Auto enter construction if awaiting
   if (state.awaitingConstruction && !state.pendingGameOver) {
     const pushLog = (line) => roomPushLog(room, line);
     const entered = enterConstructionIfNeeded(state, pushLog);
     state.awaitingConstruction = false;
+    state.onInsertSummary = null;
+    state.pendingOnInsertDisplay = false;
     if (entered) beginNextConstructionStep(state, pushLog);
     broadcastState(room);
     return;
   }
 
   serverBattleTurn(room);
-
-  // Auto-enter construction if triggered
-  if (state.awaitingConstruction && !state.pendingGameOver) {
-    const pushLog = (line) => roomPushLog(room, line);
-    const entered = enterConstructionIfNeeded(state, pushLog);
-    state.awaitingConstruction = false;
-    if (entered) beginNextConstructionStep(state, pushLog);
-  }
 
   broadcastState(room);
 
@@ -769,16 +780,6 @@ function onAdvanceBattle(ws) {
         send(room.sockets[oppOf(pid)], S_WAITING, { action: "elf_pick", who: pid });
       }
     }
-  }
-
-  if (state.pendingGameOver) {
-    // Auto-confirm game over on server
-    state.phase = PHASE.GAME_OVER;
-    state.winner = state.pendingGameOver;
-    state.pendingGameOver = null;
-    room.phase = "done";
-    broadcastState(room);
-    sendBoth(room, S_GAME_OVER, { winner: state.winner });
   }
 }
 
@@ -825,17 +826,44 @@ function onConstructionChoice(ws, msg) {
   }
 
   const pushLog = (line) => roomPushLog(room, line);
+
+  // Capture the inserted card info before applyConstructionChoice nulls the choice
+  const insertedCard = state.construction[pid].drawn[Number(insertIndex) || 0];
+  const insertCardLabel = formatCardLabel(insertedCard);
+  const insertCardText = insertedCard?.text ?? "";
+
   const beforeSnapshot = snapshotFightersState(state);
   applyConstructionChoice(state, pid, pushLog);
   const afterSnapshot = snapshotFightersState(state);
 
   let changed = false;
+  const changes = [];
+  const allFighters = [...state.players.p1.fighters, ...state.players.p2.fighters];
+  const fighterById = new Map(allFighters.map((f) => [f.id, f]));
   for (const [id, a] of afterSnapshot.entries()) {
     const b = beforeSnapshot.get(id);
     if (!b) continue;
-    if ((a.hp ?? 0) !== (b.hp ?? 0) || (a.power ?? 0) !== (b.power ?? 0)) { changed = true; break; }
+    const dh = (a.hp ?? 0) - (b.hp ?? 0);
+    const dp = (a.power ?? 0) - (b.power ?? 0);
+    if (dh !== 0 || dp !== 0) {
+      changed = true;
+      const f = fighterById.get(id);
+      const parts = [];
+      if (dh !== 0) parts.push(`HP ${dh > 0 ? "+" : ""}${dh}`);
+      if (dp !== 0) parts.push(`力量 ${dp > 0 ? "+" : ""}${dp}`);
+      changes.push({ name: f?.name ?? id, detail: parts.join("，") });
+    }
   }
   if (changed) state.lastIntermissionEffect = { before: beforeSnapshot, after: afterSnapshot };
+
+  // Extract the "入库时" portion of the card text for the summary
+  if (changed && insertCardText.includes("入库时")) {
+    if (!state.onInsertSummary) state.onInsertSummary = [];
+    // Parse out just the 入库时 effect text (everything between "入库时" and the next "；" separated non-入库时 effect)
+    const match = insertCardText.match(/入库时([^；]+)/);
+    const effectText = match ? match[1].trim() : "";
+    state.onInsertSummary.push({ playerId: pid, cardLabel: insertCardLabel, effectText, changes });
+  }
 
   const w = checkWinner(state);
   if (w) {
@@ -849,20 +877,48 @@ function onConstructionChoice(ws, msg) {
     broadcastState(room);
     sendBoth(room, S_GAME_OVER, { winner: w });
   } else if (!state.construction.p1 && !state.construction.p2) {
-    state.phase = PHASE.BATTLE;
-    state.awaitingConstruction = false;
-    state.round += 1;
-    state.turn = 1;
-    state.lastFlip = null;
-    state.lastRound = null;
-    state.compareHold = false;
-    pushLog(`构筑完成：回到战斗阶段`);
-    broadcastState(room);
+    if (state.onInsertSummary && state.onInsertSummary.length > 0) {
+      // Hold in pending state so clients can display on-insert effects
+      state.pendingOnInsertDisplay = true;
+      pushLog(`构筑完成：展示入库时效果`);
+      broadcastState(room);
+    } else {
+      state.phase = PHASE.BATTLE;
+      state.awaitingConstruction = false;
+      state.round += 1;
+      state.turn = 1;
+      state.lastFlip = null;
+      state.lastRound = null;
+      state.compareHold = false;
+      pushLog(`构筑完成：回到战斗阶段`);
+      broadcastState(room);
+    }
   } else {
     // One player done, waiting for other
     send(room.sockets[oppOf(pid)], S_WAITING, { action: "construction", who: pid });
     broadcastState(room);
   }
+}
+
+function onConfirmInsertDisplay(ws) {
+  const room = rooms.get(ws._roomCode);
+  const pid = ws._playerId;
+  if (!room || !pid || room.phase !== "playing") return;
+  const state = room.gameState;
+  if (!state || state.phase !== PHASE.CONSTRUCTION || !state.pendingOnInsertDisplay) return;
+
+  const pushLog = (line) => roomPushLog(room, line);
+  state.pendingOnInsertDisplay = false;
+  state.onInsertSummary = null;
+  state.phase = PHASE.BATTLE;
+  state.awaitingConstruction = false;
+  state.round += 1;
+  state.turn = 1;
+  state.lastFlip = null;
+  state.lastRound = null;
+  state.compareHold = false;
+  pushLog(`构筑完成：回到战斗阶段`);
+  broadcastState(room);
 }
 
 function onConfirmEnd(ws) {
