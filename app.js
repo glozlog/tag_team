@@ -323,7 +323,37 @@ function createApp() {
           clientPhase = "game";
           hideLobby();
         }
+        // Preserve local construction drag/selection state across server syncs
+        const savedConstruction = (myPlayerId
+          && state?.construction?.[myPlayerId]
+          && typeof state.construction[myPlayerId] === "object")
+          ? state.construction[myPlayerId] : null;
+
         state = hydrateState(msg.state);
+
+        // Restore local construction choices if still in construction and not yet confirmed
+        if (savedConstruction
+          && myPlayerId
+          && state.phase === PHASE.CONSTRUCTION
+          && state.construction?.[myPlayerId]
+          && typeof state.construction[myPlayerId] === "object") {
+          const sc = state.construction[myPlayerId];
+          const deckLen = state.players[myPlayerId]?.battleDeck?.length ?? 0;
+          sc.insertIndex = savedConstruction.insertIndex;
+          sc.bottomOrder = savedConstruction.bottomOrder;
+          sc.dragging = savedConstruction.dragging;
+          sc.previewPos = savedConstruction.previewPos;
+          // Clamp insertPos in case deck length changed from opponent's on-insert effect
+          if (Number.isFinite(savedConstruction.insertPos)) {
+            sc.insertPos = Math.min(savedConstruction.insertPos, deckLen);
+          } else {
+            sc.insertPos = savedConstruction.insertPos;
+          }
+          if (savedConstruction._globalInsertDragHandlers) {
+            sc._globalInsertDragHandlers = savedConstruction._globalInsertDragHandlers;
+          }
+        }
+
         if (Array.isArray(msg.log)) {
           clearLog();
           for (const line of msg.log) els.log.textContent += line + "\n";
@@ -357,6 +387,9 @@ function createApp() {
       }
       case S_ERROR: {
         window.alert(msg.message || "服务器错误");
+        if (clientPhase === "waiting_picks") clientPhase = "picking";
+        if (clientPhase === "waiting_order") clientPhase = "ordering";
+        render();
         break;
       }
     }
