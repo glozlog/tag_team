@@ -1,6 +1,6 @@
 // Client → Server message types
-export const C_CREATE_ROOM = "C_CREATE_ROOM";
 export const C_JOIN_ROOM = "C_JOIN_ROOM";
+export const C_ICON_SELECT = "C_ICON_SELECT";
 export const C_PICK_FIGHTERS = "C_PICK_FIGHTERS";
 export const C_DECK_ORDER = "C_DECK_ORDER";
 export const C_ADVANCE_BATTLE = "C_ADVANCE_BATTLE";
@@ -10,7 +10,11 @@ export const C_CONFIRM_END = "C_CONFIRM_END";
 export const C_CONFIRM_INSERT_DISPLAY = "C_CONFIRM_INSERT_DISPLAY";
 
 // Server → Client message types
-export const S_ROOM_CREATED = "S_ROOM_CREATED";
+export const S_GALLERY_INIT = "S_GALLERY_INIT";
+export const S_ICON_PENDING = "S_ICON_PENDING";
+export const S_ICON_HINT = "S_ICON_HINT";
+export const S_ICON_EXPIRED = "S_ICON_EXPIRED";
+export const S_PAIRED = "S_PAIRED";
 export const S_ROOM_JOINED = "S_ROOM_JOINED";
 export const S_OPPONENT_JOINED = "S_OPPONENT_JOINED";
 export const S_OPPONENT_DISCONNECTED = "S_OPPONENT_DISCONNECTED";

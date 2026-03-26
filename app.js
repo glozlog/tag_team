@@ -7,9 +7,10 @@ import {
 } from "./shared/game-logic.js";
 
 import {
-  C_CREATE_ROOM, C_JOIN_ROOM, C_PICK_FIGHTERS, C_DECK_ORDER,
+  C_ICON_SELECT, C_PICK_FIGHTERS, C_DECK_ORDER,
   C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END, C_CONFIRM_INSERT_DISPLAY,
-  S_ROOM_CREATED, S_ROOM_JOINED, S_OPPONENT_JOINED,
+  S_GALLERY_INIT, S_ICON_PENDING, S_ICON_HINT, S_ICON_EXPIRED, S_PAIRED,
+  S_ROOM_JOINED, S_OPPONENT_JOINED,
   S_OPPONENT_DISCONNECTED, S_OPPONENT_RECONNECTED,
   S_PICKS_LOCKED, S_GAME_START,
   S_WAITING, S_ELF_PICK_NEEDED,
@@ -45,12 +46,10 @@ function createApp() {
     constructionPanel: document.getElementById("construction-panel"),
     rulesDialog: document.getElementById("rules-dialog"),
     rulesText: document.getElementById("rules-text"),
-    // Lobby elements
+    // Lobby / gallery elements
     lobby: document.getElementById("lobby"),
     lobbyStatus: document.getElementById("lobby-status"),
-    btnCreateRoom: document.getElementById("btn-create-room"),
-    btnJoinRoom: document.getElementById("btn-join-room"),
-    inputRoomCode: document.getElementById("input-room-code"),
+    galleryGrid: document.getElementById("gallery-grid"),
     gameLayout: document.getElementById("game-layout"),
     headerSubtitle: document.getElementById("header-subtitle"),
     connectionDot: document.getElementById("connection-dot"),
@@ -80,6 +79,8 @@ function createApp() {
   let clientPhase = "lobby"; // lobby | waiting_join | picking | waiting_picks | ordering | waiting_order | game
   let reconnectTimer = null;
   let reconnectDelay = 1000;
+  let galleryIcons = []; // current 9 icons dealt by server
+  let selectedIconId = null; // icon we tapped (pending match)
 
   function oppOf(pid) { return pid === "p1" ? "p2" : "p1"; }
 
@@ -128,6 +129,9 @@ function createApp() {
 
     ws.addEventListener("close", () => {
       if (clientPhase === "game" || clientPhase === "picking" || clientPhase === "ordering") {
+        setConnectionStatus("reconnecting");
+        scheduleReconnect();
+      } else if (clientPhase === "lobby" || clientPhase === "waiting_match") {
         setConnectionStatus("reconnecting");
         scheduleReconnect();
       } else {
@@ -233,15 +237,110 @@ function createApp() {
 
   // ─── Server message handler ───────────────────────────────────────────────
 
+  function renderGalleryGrid(icons) {
+    if (!els.galleryGrid) return;
+    els.galleryGrid.innerHTML = "";
+    icons.forEach((icon, i) => {
+      const cell = document.createElement("div");
+      cell.className = "gallery-cell entering";
+      cell.style.backgroundImage = `url(/gallery/${encodeURIComponent(icon.filename)})`;
+      cell.style.animationDelay = `${i * 0.06}s`;
+      cell.dataset.iconId = icon.id;
+      cell.addEventListener("click", () => {
+        if (clientPhase !== "lobby" && clientPhase !== "waiting_match") return;
+        if (selectedIconId === icon.id) return; // already selected this one
+        sendMsg(C_ICON_SELECT, { iconId: icon.id });
+      });
+      els.galleryGrid.appendChild(cell);
+    });
+  }
+
+  function clearGallerySelection() {
+    selectedIconId = null;
+    if (!els.galleryGrid) return;
+    for (const cell of els.galleryGrid.children) {
+      cell.classList.remove("selected");
+    }
+  }
+
   function handleServerMessage(msg) {
     switch (msg.type) {
-      case S_ROOM_CREATED: {
-        roomCode = msg.code;
+      case S_GALLERY_INIT: {
+        galleryIcons = msg.icons;
+        selectedIconId = null;
+        renderGalleryGrid(msg.icons);
+        if (els.lobbyStatus) els.lobbyStatus.textContent = "对吗...";
+        break;
+      }
+      case S_ICON_PENDING: {
+        selectedIconId = msg.iconId;
+        clientPhase = "waiting_match";
+        if (els.lobbyStatus) els.lobbyStatus.textContent = "对吧...";
+        // Add glow to selected cell
+        if (els.galleryGrid) {
+          for (const cell of els.galleryGrid.children) {
+            cell.classList.toggle("selected", cell.dataset.iconId === msg.iconId);
+          }
+        }
+        break;
+      }
+      case S_ICON_HINT: {
+        // Opponent selected this icon — shake it as a hint
+        if (els.galleryGrid) {
+          for (const cell of els.galleryGrid.children) {
+            if (cell.dataset.iconId === msg.iconId) {
+              cell.classList.remove("hint");
+              // Force reflow to restart animation
+              void cell.offsetWidth;
+              cell.classList.add("hint");
+              cell.addEventListener("animationend", () => cell.classList.remove("hint"), { once: true });
+            }
+          }
+        }
+        break;
+      }
+      case S_ICON_EXPIRED: {
+        clearGallerySelection();
+        clientPhase = "lobby";
+        if (els.lobbyStatus) els.lobbyStatus.textContent = "不对...";
+        break;
+      }
+      case S_PAIRED: {
+        roomCode = msg.roomCode;
         myPlayerId = msg.playerId;
-        clientPhase = "waiting_join";
-        if (els.lobbyStatus) els.lobbyStatus.textContent = `房间码：${roomCode}  等待对手加入...`;
         setHeaderInfo(`房间 ${roomCode} · 你是 ${myPlayerId.toUpperCase()}`);
         applyViewSwap();
+
+        // Highlight the matched icon
+        const matchedId = msg.matchedIconId;
+        if (els.galleryGrid) {
+          for (const cell of els.galleryGrid.children) {
+            if (cell.dataset.iconId === matchedId) {
+              cell.classList.remove("selected");
+              cell.classList.add("matched");
+            }
+          }
+        }
+
+        // Transition to picking phase after match animation
+        setTimeout(() => {
+          clientPhase = "picking";
+          hideLobby();
+          hideWaiting();
+          selectedIconId = null;
+          galleryIcons = [];
+          state = {
+            phase: PHASE.SETUP,
+            showDecks: false,
+            setup: { step: "pick", myA: null, myB: null },
+            lastFlip: null,
+            lastRound: null,
+            awaitingConstruction: false,
+            pendingGameOver: null,
+            compareHold: false,
+          };
+          render();
+        }, 900);
         break;
       }
       case S_ROOM_JOINED: {
@@ -2365,26 +2464,14 @@ function createApp() {
     data.fighterDefs = parseFighters(data.fightersTxt);
     for (const w of selfTestFighters(data.fighterDefs)) pushLog(`[自检] ${w}`);
     wireRulesDialog();
-    // Show lobby on startup (online mode)
+    // Show gallery lobby and auto-connect
     state.phase = PHASE.SETUP;
     showLobby();
     render();
+    connectWs();
   }
 
-  // ─── Lobby buttons ────────────────────────────────────────────────────────
-  if (els.btnCreateRoom) {
-    els.btnCreateRoom.addEventListener("click", () => {
-      connectWs(() => sendMsg(C_CREATE_ROOM));
-    });
-  }
-  if (els.btnJoinRoom) {
-    els.btnJoinRoom.addEventListener("click", () => {
-      const code = els.inputRoomCode?.value?.trim();
-      if (!code) { window.alert("请输入房间码"); return; }
-      connectWs(() => sendMsg(C_JOIN_ROOM, { code }));
-    });
-  }
-
+  // ─── New game button ──────────────────────────────────────────────────────
   els.btnNewGame.addEventListener("click", () => {
     const running =
       state?.phase &&
@@ -2395,10 +2482,12 @@ function createApp() {
       const ok = window.confirm("游戏正在进行，是否中断并重开？");
       if (!ok) return;
     }
-    // Return to lobby
+    // Return to gallery lobby
     if (ws) { ws.close(); ws = null; }
     roomCode = null;
     myPlayerId = null;
+    selectedIconId = null;
+    galleryIcons = [];
     clientPhase = "lobby";
     state = { phase: PHASE.SETUP };
     setConnectionStatus("disconnected");
@@ -2406,6 +2495,7 @@ function createApp() {
     showLobby();
     clearLog();
     render();
+    connectWs();
   });
   els.btnToggleDecks.addEventListener("click", () => {
     state.showDecks = !state.showDecks;

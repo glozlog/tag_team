@@ -1,5 +1,5 @@
 import http from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
@@ -23,9 +23,10 @@ import {
 } from "./shared/game-logic.js";
 
 import {
-  C_CREATE_ROOM, C_JOIN_ROOM, C_PICK_FIGHTERS, C_DECK_ORDER,
+  C_JOIN_ROOM, C_ICON_SELECT, C_PICK_FIGHTERS, C_DECK_ORDER,
   C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END, C_CONFIRM_INSERT_DISPLAY,
-  S_ROOM_CREATED, S_ROOM_JOINED, S_OPPONENT_JOINED,
+  S_GALLERY_INIT, S_ICON_PENDING, S_ICON_HINT, S_ICON_EXPIRED, S_PAIRED,
+  S_ROOM_JOINED, S_OPPONENT_JOINED,
   S_OPPONENT_DISCONNECTED,
   S_PICKS_LOCKED, S_GAME_START,
   S_WAITING, S_ELF_PICK_NEEDED,
@@ -101,6 +102,9 @@ const httpServer = http.createServer(async (req, res) => {
 
 let fighterDefs = [];
 let fighterPoolByName = new Map();
+let galleryPool = []; // all icon filenames from gallery/
+
+const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
 
 async function loadGameData() {
   const fightersTxt = decodeTxtToUtf8(await readFile(path.join(__dirname, "战士库.txt")));
@@ -109,6 +113,12 @@ async function loadGameData() {
   const warnings = selfTestFighters(fighterDefs);
   for (const w of warnings) console.log(`[self-test] ${w}`);
   console.log(`Loaded ${fighterDefs.length} fighters.`);
+
+  // Scan gallery/ for icon images
+  const galleryDir = path.join(__dirname, "gallery");
+  const files = await readdir(galleryDir);
+  galleryPool = files.filter((f) => IMAGE_EXTS.has(path.extname(f).toLowerCase()));
+  console.log(`Loaded ${galleryPool.length} gallery icons.`);
 }
 
 // ─── Room management ────────────────────────────────────────────────────────
@@ -167,6 +177,91 @@ function sendEach(room, type, payloadFn) {
 }
 
 function oppOf(pid) { return pid === "p1" ? "p2" : "p1"; }
+
+// ─── Gallery matchmaking ─────────────────────────────────────────────────────
+
+// pendingSelections: iconId → { ws, timer }
+const pendingSelections = new Map();
+// Track per-client: which 9 icons they were dealt + their current pending iconId
+// ws._galleryIcons = ["file1.jpg", ...] (the 9 dealt to this client)
+// ws._pendingIconId = "file1.jpg" | null
+
+function pickRandomIcons(n) {
+  const shuffled = [...galleryPool].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, Math.min(n, shuffled.length));
+}
+
+function sendGalleryInit(ws) {
+  const icons = pickRandomIcons(9);
+  ws._galleryIcons = icons;
+  ws._pendingIconId = null;
+  send(ws, S_GALLERY_INIT, { icons: icons.map((f) => ({ id: f, filename: f })) });
+}
+
+function clearPendingSelection(ws) {
+  const iconId = ws._pendingIconId;
+  if (!iconId) return;
+  const entry = pendingSelections.get(iconId);
+  if (entry && entry.ws === ws) {
+    clearTimeout(entry.timer);
+    pendingSelections.delete(iconId);
+  }
+  ws._pendingIconId = null;
+}
+
+function onIconSelect(ws, msg) {
+  const iconId = msg.iconId;
+  if (!iconId || !ws._galleryIcons || !ws._galleryIcons.includes(iconId)) return;
+  if (ws._roomCode) return; // already in a room
+
+  // Clear any previous pending selection by this client
+  clearPendingSelection(ws);
+
+  // Check if another client already selected this icon
+  const existing = pendingSelections.get(iconId);
+  if (existing && existing.ws !== ws && existing.ws.readyState === 1) {
+    // Match! Pair them.
+    clearTimeout(existing.timer);
+    pendingSelections.delete(iconId);
+    existing.ws._pendingIconId = null;
+    ws._pendingIconId = null;
+
+    // Create room and pair
+    const room = createRoom();
+    room.sockets.p1 = existing.ws;
+    room.sockets.p2 = ws;
+    existing.ws._roomCode = room.code;
+    existing.ws._playerId = "p1";
+    ws._roomCode = room.code;
+    ws._playerId = "p2";
+    room.phase = "picking";
+
+    send(existing.ws, S_PAIRED, { playerId: "p1", roomCode: room.code, fighterNames: room.fighterNames, matchedIconId: iconId });
+    send(ws, S_PAIRED, { playerId: "p2", roomCode: room.code, fighterNames: room.fighterNames, matchedIconId: iconId });
+    return;
+  }
+
+  // No match yet — store as pending
+  const timer = setTimeout(() => {
+    if (pendingSelections.get(iconId)?.ws === ws) {
+      pendingSelections.delete(iconId);
+      ws._pendingIconId = null;
+      send(ws, S_ICON_EXPIRED, {});
+    }
+  }, 2000);
+
+  pendingSelections.set(iconId, { ws, timer });
+  ws._pendingIconId = iconId;
+  send(ws, S_ICON_PENDING, { iconId });
+
+  // Send hint to all other unmatched clients who have this icon in their 9
+  for (const client of wss.clients) {
+    if (client !== ws && client.readyState === 1 && !client._roomCode &&
+        client._galleryIcons && client._galleryIcons.includes(iconId)) {
+      send(client, S_ICON_HINT, { iconId });
+    }
+  }
+}
 
 // ─── State serialization (strip functions, convert Maps) ────────────────────
 
@@ -597,7 +692,7 @@ function handleMessage(ws, raw) {
   const { type } = msg;
 
   switch (type) {
-    case C_CREATE_ROOM: return onCreateRoom(ws, msg);
+    case C_ICON_SELECT: return onIconSelect(ws, msg);
     case C_JOIN_ROOM: return onJoinRoom(ws, msg);
     case C_PICK_FIGHTERS: return onPickFighters(ws, msg);
     case C_DECK_ORDER: return onDeckOrder(ws, msg);
@@ -607,14 +702,6 @@ function handleMessage(ws, raw) {
     case C_CONFIRM_INSERT_DISPLAY: return onConfirmInsertDisplay(ws);
     case C_CONFIRM_END: return onConfirmEnd(ws, msg);
   }
-}
-
-function onCreateRoom(ws) {
-  const room = createRoom();
-  room.sockets.p1 = ws;
-  ws._roomCode = room.code;
-  ws._playerId = "p1";
-  send(ws, S_ROOM_CREATED, { code: room.code, playerId: "p1", fighterNames: room.fighterNames });
 }
 
 function onJoinRoom(ws, msg) {
@@ -946,12 +1033,20 @@ function broadcastState(room) {
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on("connection", (ws) => {
+  // Send gallery init to new connections (they'll pick icons to pair)
+  if (galleryPool.length > 0) {
+    sendGalleryInit(ws);
+  }
+
   ws.on("message", (data) => {
     try { handleMessage(ws, String(data)); }
     catch (e) { console.error("WS message error:", e); }
   });
 
   ws.on("close", () => {
+    // Clean up any pending gallery selection
+    clearPendingSelection(ws);
+
     const code = ws._roomCode;
     const pid = ws._playerId;
     if (!code || !pid) return;

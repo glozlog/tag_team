@@ -99,7 +99,7 @@ When starting a new session:
 
 | Timestamp | Task / Area | Changes Made | Files Touched | Notes for Next Session |
 |-----------|-------------|--------------|---------------|----------------------|
-| | | | | |
+| 2026-03-26 | Mind-Link Gallery (Phases 1-8) | Replaced code-based lobby with gallery pairing mechanic: 3x3 grid of random icons, 2s match window, shake hint for opponent's pick, glow/match animations. Removed `C_CREATE_ROOM`/`S_ROOM_CREATED`/`onCreateRoom`. Kept `C_JOIN_ROOM` for mid-game reconnection. | `index.html`, `styles.css`, `shared/protocol.js`, `server.mjs`, `app.js`, `plan.md` | Gallery has 9 images currently — mechanic supports N>9 pool with random selection. Old `S_ROOM_JOINED`/`S_OPPONENT_JOINED` handlers still in app.js for reconnection path. |
 
 ### How to Log
 - Add a row **after every completed task**, not just at end of session
