@@ -389,6 +389,7 @@ function createApp() {
         window.alert(msg.message || "服务器错误");
         if (clientPhase === "waiting_picks") clientPhase = "picking";
         if (clientPhase === "waiting_order") clientPhase = "ordering";
+        hideWaiting();
         render();
         break;
       }
@@ -1202,11 +1203,20 @@ function createApp() {
               <div class="construction-row">
                 <button type="button" id="online-pick-clear" ${waiting ? "disabled" : ""}>清空</button>
                 <div class="spacer"></div>
-                <button type="button" id="online-pick-confirm" ${!waiting && setup.myA && setup.myB ? "" : "disabled"}>${waiting ? "已提交，等待对手..." : "确认选择"}</button>
+                ${waiting
+                  ? `<button type="button" id="online-pick-modify">修改选择</button>`
+                  : `<button type="button" id="online-pick-confirm" ${setup.myA && setup.myB ? "" : "disabled"}>确认选择</button>`
+                }
               </div>
             </div>
           `;
-          if (!waiting) {
+          if (waiting) {
+            document.getElementById("online-pick-modify")?.addEventListener("click", () => {
+              clientPhase = "picking";
+              hideWaiting();
+              render();
+            });
+          } else {
             els.constructionPanel.querySelectorAll("[data-pick-name]").forEach((el) => {
               el.addEventListener("click", () => {
                 if (el.classList.contains("disabled")) return;
