@@ -20,6 +20,7 @@ import {
   applyConstructionChoice,
   beginNextConstructionStep,
   triggerHpRulesAtCurrentHp,
+  commitFlips,
 } from "./shared/game-logic.js";
 
 import {
@@ -90,7 +91,11 @@ const httpServer = http.createServer(async (req, res) => {
     if (!filePath) { res.writeHead(403); res.end("Forbidden"); return; }
     const data = await readFile(filePath);
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { "Content-Type": guessContentType(filePath), "Cache-Control": "no-store" });
+    const IMAGE_CONTENT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico"]);
+    const cacheControl = IMAGE_CONTENT.has(ext)
+      ? "public, max-age=86400"          // images: cache 1 day
+      : "no-cache";                       // html/js/css: revalidate every time
+    res.writeHead(200, { "Content-Type": guessContentType(filePath), "Cache-Control": cacheControl });
     if (ext === ".txt") { res.end(decodeTxtToUtf8(data)); return; }
     res.end(data);
   } catch {
@@ -436,9 +441,11 @@ function serverBattleTurn(room) {
       ctx, myCard: p1Card, oppCard: p2Card,
       myEffects: p1Effects, oppEffects: p2Effects,
       myPlayer: p1, oppPlayer: p2,
-      onlySide: pid,
+      // onlySide removed: after first settlement, cards may be flipped,
+      // so both sides need to re-settle with updated (flipped) effects
       guardAtStartById: lf?.guardAtStartById,
     });
+    commitFlips(settlement.flipTriggeredByCardId, p1Card, p2Card);
     for (const line of settlement.log) pushLog(line);
     if (settlement?.golemRebirthByPlayerId?.size) {
       for (const x of settlement.golemRebirthByPlayerId) state.doubleNextByPlayer[x] = true;
@@ -502,6 +509,7 @@ function serverBattleTurn(room) {
     myPlayer: p1, oppPlayer: p2,
     guardAtStartById: state.lastFlip.guardAtStartById,
   });
+  commitFlips(settlement.flipTriggeredByCardId, p1Card, p2Card);
   for (const line of settlement.log) pushLog(line);
   if (settlement?.golemRebirthByPlayerId?.size) {
     for (const x of settlement.golemRebirthByPlayerId) state.doubleNextByPlayer[x] = true;

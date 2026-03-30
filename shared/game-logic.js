@@ -1633,7 +1633,6 @@ function settleEffects({
     }
     if (effect.type === "flip") {
       if (runtime?.card && typeof runtime.card === "object") {
-        runtime.card.flipped = true;
         if (runtime?.flipTriggeredByCardId && typeof runtime.flipTriggeredByCardId.add === "function" && runtime.card.id)
           runtime.flipTriggeredByCardId.add(runtime.card.id);
         const cardLabel = runtime.card.cardName ? `${runtime.card.fighterName} · ${runtime.card.cardName}` : `${runtime.card.fighterName}#${runtime.card.cardNo}`;
@@ -2938,6 +2937,15 @@ function triggerHpRulesAtCurrentHp(state, fighterId, pushLog) {
   }
 }
 
+function commitFlips(flipTriggeredByCardId, ...cardSources) {
+  if (!flipTriggeredByCardId || !flipTriggeredByCardId.size) return;
+  for (const card of cardSources) {
+    if (card && flipTriggeredByCardId.has(card.id)) {
+      card.flipped = true;
+    }
+  }
+}
+
 export {
   nowTime,
   formatCardLabel,
@@ -2949,6 +2957,7 @@ export {
   buildContextForBattle,
   settleEffects,
   applyDeltas,
+  commitFlips,
   checkWinner,
   enterConstructionIfNeeded,
   startConstructionForPlayer,
