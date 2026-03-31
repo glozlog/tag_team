@@ -722,13 +722,13 @@ function parseEffect(effectText) {
   const supportDirect = /^辅助受(\d+)直伤$/.exec(headKey);
   if (supportDirect) return { type: "direct", raw: s0, target: "allySupport", amount: Number(supportDirect[1]) };
 
+  const allDirect = /^4位战士各受(\d+)直伤$/.exec(headKey);
+  if (allDirect) return { type: "directAll", raw: s0, amount: Number(allDirect[1]) };
+
   const namedDirect = /^(.+?)受(\d+)直伤$/.exec(headKey);
   if (namedDirect) {
     return { type: "direct", raw: s0, target: { kind: "named", name: namedDirect[1].trim() }, amount: Number(namedDirect[2]) };
   }
-
-  const allDirect = /^4位战士各受(\d+)直伤$/.exec(headKey);
-  if (allDirect) return { type: "directAll", raw: s0, amount: Number(allDirect[1]) };
 
   const direct = /^直伤(\d+)(.*)$/.exec(headKey);
   if (direct) {
@@ -2155,7 +2155,7 @@ function settleEffects({
       else if (effect.amountMode === "blockedAttackStartPower") {
         const atkCtx = flipContext(sideCtx);
         const atkRuntime = runtime
-          ? { myEffects: runtime.oppEffects, oppEffects: runtime.myEffects, fighterById: runtime.fighterById, card: runtime.oppCard, oppCard: runtime.card }
+          ? { myEffects: runtime.oppEffects, oppEffects: runtime.myEffects, fighterById: runtime.fighterById, card: runtime.oppCard, oppCard: runtime.card, startPoliceOwnerPlayerId: runtime.startPoliceOwnerPlayerId, startPoliceOwnerFighterId: runtime.startPoliceOwnerFighterId }
           : null;
         amount = findFirstTriggeredAttackDamage(runtime?.oppEffects ?? [], atkCtx, atkRuntime) ?? 0;
       }

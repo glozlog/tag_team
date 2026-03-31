@@ -7,7 +7,7 @@ import {
 } from "./shared/game-logic.js";
 
 import {
-  C_ICON_SELECT, C_PICK_FIGHTERS, C_DECK_ORDER,
+  C_JOIN_ROOM, C_ICON_SELECT, C_PICK_FIGHTERS, C_DECK_ORDER,
   C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END, C_CONFIRM_INSERT_DISPLAY,
   S_GALLERY_INIT, S_ICON_PENDING, S_ICON_HINT, S_ICON_EXPIRED, S_PAIRED,
   S_ROOM_JOINED, S_OPPONENT_JOINED,
@@ -308,6 +308,8 @@ function createApp() {
       case S_PAIRED: {
         roomCode = msg.roomCode;
         myPlayerId = msg.playerId;
+        sessionStorage.setItem("roomCode", roomCode);
+        sessionStorage.setItem("myPlayerId", myPlayerId);
         setHeaderInfo(`房间 ${roomCode} · 你是 ${myPlayerId.toUpperCase()}`);
         applyViewSwap();
 
@@ -346,6 +348,8 @@ function createApp() {
       case S_ROOM_JOINED: {
         roomCode = msg.code;
         myPlayerId = msg.playerId;
+        sessionStorage.setItem("roomCode", roomCode);
+        sessionStorage.setItem("myPlayerId", myPlayerId);
         setHeaderInfo(`房间 ${roomCode} · 你是 ${myPlayerId.toUpperCase()}`);
         applyViewSwap();
         // If both players are present, go to picking
@@ -480,6 +484,8 @@ function createApp() {
       }
       case S_GAME_OVER: {
         hideWaiting();
+        sessionStorage.removeItem("roomCode");
+        sessionStorage.removeItem("myPlayerId");
         if (msg.state) state = hydrateState(msg.state);
         render();
         break;
@@ -2464,11 +2470,30 @@ function createApp() {
     data.fighterDefs = parseFighters(data.fightersTxt);
     for (const w of selfTestFighters(data.fighterDefs)) pushLog(`[自检] ${w}`);
     wireRulesDialog();
+    // Random question as lobby title
+    try {
+      const res = await fetch("/question.txt", { cache: "no-store" });
+      if (res.ok) {
+        const lines = (await res.text()).split("\n").map((l) => l.trim()).filter(Boolean);
+        if (lines.length > 0) {
+          const q = lines[Math.floor(Math.random() * lines.length)];
+          document.querySelector("#lobby h2").textContent = q;
+        }
+      }
+    } catch (_) {}
     // Show gallery lobby and auto-connect
     state.phase = PHASE.SETUP;
     showLobby();
     render();
-    connectWs();
+    const savedRoom = sessionStorage.getItem("roomCode");
+    const savedPid = sessionStorage.getItem("myPlayerId");
+    if (savedRoom) {
+      roomCode = savedRoom;
+      myPlayerId = savedPid;
+      connectWs(() => sendMsg(C_JOIN_ROOM, { code: roomCode }));
+    } else {
+      connectWs();
+    }
   }
 
   // ─── New game button ──────────────────────────────────────────────────────
@@ -2484,6 +2509,8 @@ function createApp() {
     }
     // Return to gallery lobby
     if (ws) { ws.close(); ws = null; }
+    sessionStorage.removeItem("roomCode");
+    sessionStorage.removeItem("myPlayerId");
     roomCode = null;
     myPlayerId = null;
     selectedIconId = null;

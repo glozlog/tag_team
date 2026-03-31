@@ -27,7 +27,7 @@ import {
   C_JOIN_ROOM, C_ICON_SELECT, C_PICK_FIGHTERS, C_DECK_ORDER,
   C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END, C_CONFIRM_INSERT_DISPLAY,
   S_GALLERY_INIT, S_ICON_PENDING, S_ICON_HINT, S_ICON_EXPIRED, S_PAIRED,
-  S_ROOM_JOINED, S_OPPONENT_JOINED,
+  S_ROOM_JOINED, S_OPPONENT_JOINED, S_OPPONENT_RECONNECTED,
   S_OPPONENT_DISCONNECTED,
   S_PICKS_LOCKED, S_GAME_START,
   S_WAITING, S_ELF_PICK_NEEDED,
@@ -742,7 +742,7 @@ function onJoinRoom(ws, msg) {
   room.disconnectTimers[pid] = null;
 
   send(ws, S_ROOM_JOINED, { code: room.code, playerId: pid, fighterNames: room.fighterNames });
-  send(room.sockets[oppOf(pid)], S_OPPONENT_JOINED, {});
+  send(room.sockets[oppOf(pid)], room.gameState ? S_OPPONENT_RECONNECTED : S_OPPONENT_JOINED, {});
 
   if (room.sockets.p1?.readyState === 1 && room.sockets.p2?.readyState === 1) {
     if (room.phase === "lobby") {
