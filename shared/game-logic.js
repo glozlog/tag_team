@@ -2248,6 +2248,15 @@ function settleEffects({
     }
   }
 
+  // Pre-pass: if P2's effects include cancelOpponentHeal or stealOpponentHeal,
+  // seed the cancel map before P1's side runs so P1's heal is blocked in time.
+  if (applyP2 && !p2Canceled) {
+    const p2CancelsP1Heal = oppEffects.some(
+      (e) => e.type === "cancelOpponentHeal" || e.type === "stealOpponentHeal"
+    );
+    if (p2CancelsP1Heal) cancelHealByPlayerId.set(myPlayer.id, true);
+  }
+
   if (applyP1) {
     applySide({
       prefix: "P1: ",
@@ -2946,6 +2955,49 @@ function commitFlips(flipTriggeredByCardId, ...cardSources) {
   }
 }
 
+// ─── Golem Rebirth: Opponent Effect Filter ───────────────────────────────────
+// On the second settlement of 土偶重生, only the golem owner's card fires
+// actively. The opponent's card may only contribute passive/reactive effects:
+//   - block (reacts to golem's second attack)
+//   - conditionals triggered by 被攻击 (attack-when-attacked)
+// All other opponent effects (attack, heal, direct damage, power changes, etc.)
+// are suppressed. Container types (linked, conditional, afterAll, ifElse) are
+// recursively filtered so that passive inner effects can still survive.
+const _GOLEM_PASSIVE_COND = /被攻击|自身被攻击|自身遭受攻击/;
+
+function filterGolemSecondOppEffects(effects) {
+  if (!Array.isArray(effects)) return effects;
+  const result = [];
+  for (const e of effects) {
+    if (!e) continue;
+    const t = e.type;
+    // Explicitly passive: block reacts to golem's second attack
+    if (t === "block" || t === "cancel" || t === "afterOppExecuteLowHp" || t === "winOnSelfKo") {
+      result.push(e);
+      continue;
+    }
+    // Passive conditional trigger (被攻击 etc.): keep entire branch, inner fires reactively
+    if (t === "conditional" && e.condRaw && _GOLEM_PASSIVE_COND.test(String(e.condRaw))) {
+      result.push(e);
+      continue;
+    }
+    // Containers: recurse; keep container only if passive inner effects survive
+    if (t === "linked" || t === "conditional" || t === "afterAll") {
+      const inner = filterGolemSecondOppEffects(e.inner ?? []);
+      if (inner.length > 0) result.push({ ...e, inner });
+      continue;
+    }
+    if (t === "ifElse") {
+      const thenInner = filterGolemSecondOppEffects(e.thenInner ?? []);
+      const elseInner = filterGolemSecondOppEffects(e.elseInner ?? []);
+      if (thenInner.length > 0 || elseInner.length > 0) result.push({ ...e, thenInner, elseInner });
+      continue;
+    }
+    // Everything else (attack, heal, direct, power, flip, etc.) is active: suppress
+  }
+  return result;
+}
+
 export {
   nowTime,
   formatCardLabel,
@@ -2958,6 +3010,7 @@ export {
   settleEffects,
   applyDeltas,
   commitFlips,
+  filterGolemSecondOppEffects,
   checkWinner,
   enterConstructionIfNeeded,
   startConstructionForPlayer,

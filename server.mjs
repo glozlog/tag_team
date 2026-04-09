@@ -21,17 +21,20 @@ import {
   beginNextConstructionStep,
   triggerHpRulesAtCurrentHp,
   commitFlips,
+  filterGolemSecondOppEffects,
 } from "./shared/game-logic.js";
 
 import {
   C_JOIN_ROOM, C_ICON_SELECT, C_PICK_FIGHTERS, C_DECK_ORDER,
   C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END, C_CONFIRM_INSERT_DISPLAY,
+  C_DRAFT_PICK1, C_DRAFT_PICK2, C_SWITCH_TO_FREE,
   S_GALLERY_INIT, S_ICON_PENDING, S_ICON_HINT, S_ICON_EXPIRED, S_PAIRED,
   S_ROOM_JOINED, S_OPPONENT_JOINED, S_OPPONENT_RECONNECTED,
   S_OPPONENT_DISCONNECTED,
   S_PICKS_LOCKED, S_GAME_START,
   S_WAITING, S_ELF_PICK_NEEDED,
   S_GAME_OVER, S_STATE_SYNC, S_ERROR,
+  S_DRAFT_ASSIGNED, S_DRAFT_REVEAL, S_SWITCH_TO_FREE,
   makeMsg, parseMsg,
 } from "./shared/protocol.js";
 
@@ -153,9 +156,45 @@ function createRoom() {
     gameState: null,
     log: [],
     fighterNames: fighterDefs.map((f) => f.name),
+    draftMode: "draft", // "draft" | "free"
+    draft: {
+      subPhase: null,                   // "draft1" | "draft_reveal"
+      pools: { p1: [], p2: [] },
+      pick1: { p1: null, p2: null },
+      discard: { p1: null, p2: null },
+      remaining: { p1: [], p2: [] },    // each player's 4 left after pick+discard
+      pick2: { p1: null, p2: null },
+    },
   };
   rooms.set(code, room);
   return room;
+}
+
+function resetDraft(room) {
+  room.draft = {
+    subPhase: null,
+    pools: { p1: [], p2: [] },
+    pick1: { p1: null, p2: null },
+    discard: { p1: null, p2: null },
+    remaining: { p1: [], p2: [] },
+    pick2: { p1: null, p2: null },
+  };
+}
+
+function startDraft(room) {
+  if (fighterPoolByName.size < 12) {
+    // Not enough fighters for draft — fall back to free pick
+    room.draftMode = "free";
+    sendBoth(room, S_SWITCH_TO_FREE, {});
+    return;
+  }
+  resetDraft(room);
+  const allNames = [...fighterPoolByName.keys()].sort(() => Math.random() - 0.5);
+  room.draft.pools.p1 = allNames.slice(0, 6);
+  room.draft.pools.p2 = allNames.slice(6, 12);
+  room.draft.subPhase = "draft1";
+  send(room.sockets.p1, S_DRAFT_ASSIGNED, { myPool: room.draft.pools.p1 });
+  send(room.sockets.p2, S_DRAFT_ASSIGNED, { myPool: room.draft.pools.p2 });
 }
 
 function destroyRoom(code) {
@@ -243,6 +282,7 @@ function onIconSelect(ws, msg) {
 
     send(existing.ws, S_PAIRED, { playerId: "p1", roomCode: room.code, fighterNames: room.fighterNames, matchedIconId: iconId });
     send(ws, S_PAIRED, { playerId: "p2", roomCode: room.code, fighterNames: room.fighterNames, matchedIconId: iconId });
+    startDraft(room);
     return;
   }
 
@@ -437,12 +477,14 @@ function serverBattleTurn(room) {
     for (const f of [...p1.fighters, ...p2.fighters]) f.snakeFlipMark = null;
     const p1Effects = ensureCardCompiled(p1Card);
     const p2Effects = ensureCardCompiled(p2Card);
+    // On the second settlement, only the golem owner's card fires actively.
+    // The opponent's card is filtered to passive-only (block, 被攻击 conditionals).
+    // Post-flip effects on the opponent's card follow the same rule: active = suppressed.
     const settlement = settleEffects({
       ctx, myCard: p1Card, oppCard: p2Card,
-      myEffects: p1Effects, oppEffects: p2Effects,
+      myEffects: pid === "p2" ? filterGolemSecondOppEffects(p1Effects) : p1Effects,
+      oppEffects: pid === "p1" ? filterGolemSecondOppEffects(p2Effects) : p2Effects,
       myPlayer: p1, oppPlayer: p2,
-      // onlySide removed: after first settlement, cards may be flipped,
-      // so both sides need to re-settle with updated (flipped) effects
       guardAtStartById: lf?.guardAtStartById,
     });
     commitFlips(settlement.flipTriggeredByCardId, p1Card, p2Card);
@@ -700,15 +742,18 @@ function handleMessage(ws, raw) {
   const { type } = msg;
 
   switch (type) {
-    case C_ICON_SELECT: return onIconSelect(ws, msg);
-    case C_JOIN_ROOM: return onJoinRoom(ws, msg);
-    case C_PICK_FIGHTERS: return onPickFighters(ws, msg);
-    case C_DECK_ORDER: return onDeckOrder(ws, msg);
-    case C_ADVANCE_BATTLE: return onAdvanceBattle(ws, msg);
-    case C_ELF_PICK: return onElfPick(ws, msg);
-    case C_CONSTRUCTION_CHOICE: return onConstructionChoice(ws, msg);
+    case C_ICON_SELECT:           return onIconSelect(ws, msg);
+    case C_JOIN_ROOM:             return onJoinRoom(ws, msg);
+    case C_PICK_FIGHTERS:         return onPickFightersLegacy(ws, msg);
+    case C_DRAFT_PICK1:           return onDraftPick1(ws, msg);
+    case C_DRAFT_PICK2:           return onDraftPick2(ws, msg);
+    case C_SWITCH_TO_FREE:        return onSwitchToFree(ws, msg);
+    case C_DECK_ORDER:            return onDeckOrder(ws, msg);
+    case C_ADVANCE_BATTLE:        return onAdvanceBattle(ws, msg);
+    case C_ELF_PICK:              return onElfPick(ws, msg);
+    case C_CONSTRUCTION_CHOICE:   return onConstructionChoice(ws, msg);
     case C_CONFIRM_INSERT_DISPLAY: return onConfirmInsertDisplay(ws);
-    case C_CONFIRM_END: return onConfirmEnd(ws, msg);
+    case C_CONFIRM_END:           return onConfirmEnd(ws, msg);
   }
 }
 
@@ -748,6 +793,16 @@ function onJoinRoom(ws, msg) {
     if (room.phase === "lobby") {
       room.phase = "picking";
     }
+    if (room.phase === "picking") {
+      // Full reset for both modes on any reconnect during picking
+      room.picks = { p1: null, p2: null };
+      if (room.draftMode === "draft") {
+        startDraft(room);
+      } else {
+        sendBoth(room, S_SWITCH_TO_FREE, {});
+      }
+      return;
+    }
     // If reconnecting mid-game, send full state sync
     if (room.gameState) {
       send(ws, S_STATE_SYNC, {
@@ -758,10 +813,11 @@ function onJoinRoom(ws, msg) {
   }
 }
 
-function onPickFighters(ws, msg) {
+/* FREE DRAFT — legacy free-pick handler, reached when room.draftMode === "free" */
+function onPickFightersLegacy(ws, msg) {
   const room = rooms.get(ws._roomCode);
   const pid = ws._playerId;
-  if (!room || !pid || room.phase !== "picking") return;
+  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "free") return;
   const picks = msg.picks;
   if (!Array.isArray(picks) || picks.length !== 2) { send(ws, S_ERROR, { message: "必须选择2位战士" }); return; }
   if (!picks.every((n) => fighterPoolByName.has(n))) { send(ws, S_ERROR, { message: "无效战士名称" }); return; }
@@ -792,6 +848,66 @@ function onPickFighters(ws, msg) {
   } else {
     send(room.sockets[oppOf(pid)], S_WAITING, { action: "pick", who: pid });
   }
+}
+/* END FREE DRAFT */
+
+function onDraftPick1(ws, msg) {
+  const room = rooms.get(ws._roomCode);
+  const pid = ws._playerId;
+  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "draft" || room.draft.subPhase !== "draft1") return;
+
+  const pick = String(msg.pick ?? "");
+  const discard = String(msg.discard ?? "");
+  const myPool = room.draft.pools[pid];
+  if (!myPool.includes(pick) || !myPool.includes(discard)) { send(ws, S_ERROR, { message: "无效战士名称" }); return; }
+  if (pick === discard) { send(ws, S_ERROR, { message: "保留和弃置不能是同一名战士" }); return; }
+
+  room.draft.pick1[pid] = pick;
+  room.draft.discard[pid] = discard;
+  // remaining[pid] = their 4 leftover (pool minus pick minus discard)
+  room.draft.remaining[pid] = myPool.filter((n) => n !== pick && n !== discard);
+
+  if (room.draft.pick1.p1 && room.draft.pick1.p2) {
+    room.draft.subPhase = "draft_reveal";
+    // Each player receives: opponent's pick + opponent's remaining 4
+    send(room.sockets.p1, S_DRAFT_REVEAL, { opponentPick: room.draft.pick1.p2, exchangePool: room.draft.remaining.p2 });
+    send(room.sockets.p2, S_DRAFT_REVEAL, { opponentPick: room.draft.pick1.p1, exchangePool: room.draft.remaining.p1 });
+  } else {
+    send(room.sockets[oppOf(pid)], S_WAITING, { action: "draft_pick1", who: pid });
+  }
+}
+
+function onDraftPick2(ws, msg) {
+  const room = rooms.get(ws._roomCode);
+  const pid = ws._playerId;
+  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "draft" || room.draft.subPhase !== "draft_reveal") return;
+
+  const pick = String(msg.pick ?? "");
+  // This player receives the opponent's remaining pool
+  const receivedPool = room.draft.remaining[oppOf(pid)];
+  if (!receivedPool.includes(pick)) { send(ws, S_ERROR, { message: "无效战士名称" }); return; }
+
+  room.draft.pick2[pid] = pick;
+
+  if (room.draft.pick2.p1 && room.draft.pick2.p2) {
+    room.picks.p1 = [room.draft.pick1.p1, room.draft.pick2.p1];
+    room.picks.p2 = [room.draft.pick1.p2, room.draft.pick2.p2];
+    room.phase = "ordering";
+    sendBoth(room, S_PICKS_LOCKED, { p1Picks: room.picks.p1, p2Picks: room.picks.p2 });
+  } else {
+    send(room.sockets[oppOf(pid)], S_WAITING, { action: "draft_pick2", who: pid });
+  }
+}
+
+function onSwitchToFree(ws, msg) {
+  const room = rooms.get(ws._roomCode);
+  const pid = ws._playerId;
+  // Only allowed during draft1 subphase — once reveal has happened, opponent info is exposed
+  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "draft" || room.draft.subPhase !== "draft1") return;
+
+  room.draftMode = "free";
+  resetDraft(room);
+  sendBoth(room, S_SWITCH_TO_FREE, {});
 }
 
 function onDeckOrder(ws, msg) {

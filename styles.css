@@ -932,6 +932,29 @@ body.view-swapped .battle-card[data-side="P2"] { order: 1; }
   cursor: default;
 }
 
+.setup-fighter.draft-pick {
+  border-color: #3a8c55;
+  background: rgba(40, 110, 65, 0.28);
+  box-shadow: 0 0 0 2px rgba(58, 140, 85, 0.45);
+}
+
+.setup-fighter.draft-discard {
+  border-color: #7c3a3a;
+  background: rgba(100, 40, 40, 0.22);
+  box-shadow: 0 0 0 2px rgba(124, 58, 58, 0.4);
+  opacity: 0.6;
+}
+
+.setup-slot.draft-pick-slot {
+  border-color: #3a8c55;
+  background: rgba(40, 110, 65, 0.12);
+}
+
+.setup-slot.draft-discard-slot {
+  border-color: #7c3a3a;
+  background: rgba(100, 40, 40, 0.1);
+}
+
 .setup-slots {
   margin-top: 12px;
   display: grid;
@@ -1225,18 +1248,32 @@ body.setup-dragging {
 }
 
 .construction-card[data-player] .insert-board .dropzone {
-  min-height: 10px;
-  padding: 0;
+  min-height: 24px;
+  padding: 0 6px;
   margin: 4px 0;
-  border: 1px dashed transparent;
+  border: 1px dashed rgba(42, 51, 70, 0.6);
+  border-radius: 6px;
   background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 80ms, background 80ms;
 }
 
-.construction-card[data-player] .insert-board:not(.dragging) .dropzone {
-  display: none;
+.construction-card[data-player] .insert-board .dropzone:hover {
+  border-color: rgba(91, 140, 255, 0.5);
+  background: rgba(91, 140, 255, 0.04);
+}
+
+.construction-card[data-player] .insert-board .dropzone.selected {
+  border-color: #5b8cff;
+  background: rgba(91, 140, 255, 0.12);
 }
 
 .construction-card[data-player] .insert-board.dragging .dropzone {
+  min-height: 10px;
+  padding: 0;
   border-color: rgba(42, 51, 70, 0.85);
 }
 
@@ -1245,6 +1282,49 @@ body.setup-dragging {
   border-color: #5b8cff;
   background: rgba(91, 140, 255, 0.08);
   animation: slot-pop 120ms ease;
+}
+
+.slot-label {
+  font-size: 11px;
+  opacity: 0.45;
+  pointer-events: none;
+  letter-spacing: 0.01em;
+}
+
+.dropzone.selected .slot-label,
+.dropzone:hover .slot-label {
+  opacity: 0.85;
+}
+
+.construction-card[data-player] .insert-board.dragging .slot-label {
+  display: none;
+}
+
+.draw-order-preview {
+  margin-top: 8px;
+  border: 1px solid #20283a;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #0c111b;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.draw-order-preview-title {
+  font-size: 11px;
+  opacity: 0.55;
+  margin-bottom: 4px;
+}
+
+.draw-order-row {
+  font-size: 11px;
+  padding: 2px 0;
+  opacity: 0.7;
+}
+
+.draw-order-row.draw-order-bottom {
+  color: #f0c060;
+  opacity: 0.9;
 }
 
 @keyframes slot-pop {

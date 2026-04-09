@@ -9,12 +9,14 @@ import {
 import {
   C_JOIN_ROOM, C_ICON_SELECT, C_PICK_FIGHTERS, C_DECK_ORDER,
   C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END, C_CONFIRM_INSERT_DISPLAY,
+  C_DRAFT_PICK1, C_DRAFT_PICK2, C_SWITCH_TO_FREE,
   S_GALLERY_INIT, S_ICON_PENDING, S_ICON_HINT, S_ICON_EXPIRED, S_PAIRED,
   S_ROOM_JOINED, S_OPPONENT_JOINED,
   S_OPPONENT_DISCONNECTED, S_OPPONENT_RECONNECTED,
   S_PICKS_LOCKED, S_GAME_START,
   S_WAITING, S_ELF_PICK_NEEDED,
   S_GAME_OVER, S_STATE_SYNC, S_ERROR,
+  S_DRAFT_ASSIGNED, S_DRAFT_REVEAL, S_SWITCH_TO_FREE,
   makeMsg, parseMsg,
 } from "./shared/protocol.js";
 
@@ -324,8 +326,10 @@ function createApp() {
           }
         }
 
-        // Transition to picking phase after match animation
+        // Transition to picking phase after match animation.
+        // S_DRAFT_ASSIGNED may arrive before the 900ms fires — if so, skip this.
         setTimeout(() => {
+          if (state.phase === PHASE.SETUP) return; // already transitioned via S_DRAFT_ASSIGNED
           clientPhase = "picking";
           hideLobby();
           hideWaiting();
@@ -405,6 +409,46 @@ function createApp() {
           myPicks: myPicks,
           topName: null,
         };
+        render();
+        break;
+      }
+      case S_DRAFT_ASSIGNED: {
+        // Full transition to SETUP phase with draft1 step
+        clientPhase = "picking";
+        hideLobby();
+        hideWaiting();
+        selectedIconId = null;
+        galleryIcons = [];
+        state = {
+          phase: PHASE.SETUP,
+          showDecks: false,
+          setup: { step: "draft1", myPool: msg.myPool, myPick: null, myDiscard: null, confirmed: false },
+          lastFlip: null,
+          lastRound: null,
+          awaitingConstruction: false,
+          pendingGameOver: null,
+          compareHold: false,
+        };
+        render();
+        break;
+      }
+      case S_DRAFT_REVEAL: {
+        state.setup = {
+          step: "draft2",
+          opponentPick: msg.opponentPick,
+          exchangePool: msg.exchangePool,
+          myPick2: null,
+          confirmed: false,
+        };
+        hideWaiting();
+        render();
+        break;
+      }
+      case S_SWITCH_TO_FREE: {
+        // data.fighterDefs already loaded at startup — no payload needed
+        state.setup = { step: "pick", myA: null, myB: null };
+        clientPhase = "picking";
+        hideWaiting();
         render();
         break;
       }
@@ -1271,6 +1315,138 @@ function createApp() {
         return html;
       };
 
+      // ── Draft1: each player picks 1, discards 1 from their 6 ──
+      if (setup.step === "draft1") {
+        const myPool = setup.myPool || [];
+        const confirmed = !!setup.confirmed;
+        const slotContent = (name, slotType) => {
+          if (!name) return `<div class="setup-slot-placeholder">${slotType === "pick" ? "点击选择" : "点击弃置"}</div>`;
+          return `<div class="setup-picked" data-draft-clear="${escapeHtml(slotType)}">${headshotImgHtml(name, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(name)}</div></div>`;
+        };
+        const poolCells = myPool.map((n) => {
+          const isPick = n === setup.myPick;
+          const isDiscard = n === setup.myDiscard;
+          const cls = isPick ? " draft-pick" : isDiscard ? " draft-discard" : "";
+          return `<div class="setup-fighter${cls}${confirmed ? " disabled" : ""}" data-draft-fighter="${escapeHtml(n)}">${headshotImgHtml(n, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(n)}</div></div>`;
+        });
+        els.constructionPanel.innerHTML = `
+          <div class="construction-card">
+            <div><strong>选择战士</strong>：保留 1 名，弃置 1 名</div>
+            <div style="margin-top:4px;font-size:12px;opacity:0.65">剩余 4 名将交换给对手选择</div>
+            <div style="margin-top:14px;display:flex;gap:16px;align-items:flex-start;">
+              <div style="min-width:180px;display:flex;flex-direction:column;gap:12px;">
+                <div>
+                  <div style="font-size:11px;opacity:0.7;margin-bottom:4px;">✓ 保留</div>
+                  <div class="setup-slot draft-pick-slot" data-draft-slot="pick">${slotContent(setup.myPick, "pick")}</div>
+                </div>
+                <div>
+                  <div style="font-size:11px;opacity:0.7;margin-bottom:4px;">✗ 弃置</div>
+                  <div class="setup-slot draft-discard-slot" data-draft-slot="discard">${slotContent(setup.myDiscard, "discard")}</div>
+                </div>
+              </div>
+              <div class="setup-pool" style="flex:1;grid-template-columns:repeat(3,minmax(0,1fr));min-height:auto;">
+                ${poolCells.join("")}
+              </div>
+            </div>
+            <div class="construction-row" style="margin-top:12px;">
+              <button type="button" id="draft-switch-free" ${confirmed ? "disabled" : ""}>自由选择</button>
+              <div class="spacer"></div>
+              ${confirmed
+                ? `<span style="opacity:0.7;font-size:13px;">等待对手...</span>`
+                : `<button type="button" id="draft1-confirm" ${setup.myPick && setup.myDiscard ? "" : "disabled"}>确认</button>`
+              }
+            </div>
+          </div>
+        `;
+        if (!confirmed) {
+          els.constructionPanel.querySelectorAll("[data-draft-fighter]").forEach((el) => {
+            el.addEventListener("click", () => {
+              if (el.classList.contains("disabled")) return;
+              const name = el.getAttribute("data-draft-fighter");
+              if (name === setup.myPick) { setup.myPick = null; }
+              else if (name === setup.myDiscard) { setup.myDiscard = null; }
+              else if (!setup.myPick) { setup.myPick = name; }
+              else if (!setup.myDiscard) { setup.myDiscard = name; }
+              else { setup.myDiscard = name; }
+              render();
+            });
+          });
+          els.constructionPanel.querySelectorAll("[data-draft-clear]").forEach((el) => {
+            el.addEventListener("click", () => {
+              const slotType = el.getAttribute("data-draft-clear");
+              if (slotType === "pick") setup.myPick = null;
+              else setup.myDiscard = null;
+              render();
+            });
+          });
+          document.getElementById("draft-switch-free")?.addEventListener("click", () => {
+            sendMsg(C_SWITCH_TO_FREE, {});
+          });
+          document.getElementById("draft1-confirm")?.addEventListener("click", () => {
+            if (!setup.myPick || !setup.myDiscard) return;
+            setup.confirmed = true;
+            render();
+            sendMsg(C_DRAFT_PICK1, { pick: setup.myPick, discard: setup.myDiscard });
+          });
+        }
+        return;
+      }
+
+      // ── Draft2: each player picks 1 from the opponent's remaining 4 ──
+      if (setup.step === "draft2") {
+        const exchangePool = setup.exchangePool || [];
+        const confirmed = !!setup.confirmed;
+        const poolCells = exchangePool.map((n) => {
+          const isSelected = n === setup.myPick2;
+          return `<div class="setup-fighter${isSelected ? " draft-pick" : ""}${confirmed ? " disabled" : ""}" data-draft-fighter2="${escapeHtml(n)}">${headshotImgHtml(n, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(n)}</div></div>`;
+        });
+        els.constructionPanel.innerHTML = `
+          <div class="construction-card">
+            <div><strong>选择战士</strong>：从对手剩余战士中选 1 名</div>
+            <div style="margin-top:14px;display:flex;gap:24px;align-items:flex-start;">
+              <div style="min-width:140px;">
+                <div style="font-size:11px;opacity:0.7;margin-bottom:6px;">对手选择了</div>
+                <div class="setup-fighter" style="cursor:default;pointer-events:none;">
+                  ${headshotImgHtml(setup.opponentPick, "setup-headshot")}
+                  <div class="setup-fighter-name">${escapeHtml(setup.opponentPick ?? "")}</div>
+                </div>
+              </div>
+              <div style="flex:1;">
+                <div style="font-size:11px;opacity:0.7;margin-bottom:6px;">你的选择（选 1 名）</div>
+                <div class="setup-pool" style="grid-template-columns:repeat(4,minmax(0,1fr));min-height:auto;">
+                  ${poolCells.join("")}
+                </div>
+              </div>
+            </div>
+            <div class="construction-row" style="margin-top:12px;">
+              <div class="spacer"></div>
+              ${confirmed
+                ? `<span style="opacity:0.7;font-size:13px;">等待对手...</span>`
+                : `<button type="button" id="draft2-confirm" ${setup.myPick2 ? "" : "disabled"}>确认</button>`
+              }
+            </div>
+          </div>
+        `;
+        if (!confirmed) {
+          els.constructionPanel.querySelectorAll("[data-draft-fighter2]").forEach((el) => {
+            el.addEventListener("click", () => {
+              if (el.classList.contains("disabled")) return;
+              const name = el.getAttribute("data-draft-fighter2");
+              setup.myPick2 = (name === setup.myPick2) ? null : name;
+              render();
+            });
+          });
+          document.getElementById("draft2-confirm")?.addEventListener("click", () => {
+            if (!setup.myPick2) return;
+            setup.confirmed = true;
+            render();
+            sendMsg(C_DRAFT_PICK2, { pick: setup.myPick2 });
+          });
+        }
+        return;
+      }
+
+      /* FREE DRAFT UI — reached via S_SWITCH_TO_FREE or server fallback */
       if (setup.step === "pick") {
         // ── Online mode: simplified pick UI (own slots only) ──
         if (clientPhase === "picking" || clientPhase === "waiting_picks") {
@@ -1617,6 +1793,7 @@ function createApp() {
         });
         return;
       }
+      /* END FREE DRAFT UI */
 
       // ── Online mode: deck order UI ──
       if (clientPhase === "ordering" || clientPhase === "waiting_order") {
@@ -1937,7 +2114,8 @@ function createApp() {
       let board = "";
       for (let i = 0; i <= deck.length; i++) {
         const active = dragging && previewPos === i;
-        board += `<div class="dropzone${active ? " active" : ""}" data-player="${playerId}" data-pos="${i}"></div>`;
+        const slotSelected = !dragging && placed && i === choice.insertPos;
+        board += `<div class="dropzone${active ? " active" : ""}${slotSelected ? " selected" : ""}" data-player="${playerId}" data-pos="${i}"><span class="slot-label">第${i + 1}位</span></div>`;
         if (!dragging && placed && i === choice.insertPos) {
           board += `
             <div class="insert-card in-board placed" draggable="true" data-player="${playerId}">
@@ -1964,6 +2142,15 @@ function createApp() {
       const restLabel =
         rest.length === 2 ? `${rest[0].fighterName}#${rest[0].cardNo} / ${rest[1].fighterName}#${rest[1].cardNo}` : "-";
 
+      const restInOrder = choice.bottomOrder === "10" ? [rest[1], rest[0]] : [rest[0], rest[1]];
+      const previewCards = [...player.constructionDeck, ...restInOrder.filter(Boolean)];
+      const previewRows = previewCards
+        .map((c, i) => {
+          const isBottom = i >= player.constructionDeck.length;
+          return `<div class="draw-order-row${isBottom ? " draw-order-bottom" : ""}">${i + 1}. ${c.fighterName}#${c.cardNo}</div>`;
+        })
+        .join("");
+
       const canApply = placed ? "" : "disabled";
 
       return `
@@ -1978,7 +2165,7 @@ function createApp() {
                   <div class="insert-title">待插入：${cardTitleHtml(insertCard)}</div>
                   <div class="insert-text">${displayCardText(insertCard)}</div>
                 </div>
-                <div class="insert-outside-hint">${placed ? "已放置，可拖回撤销/改位置" : "拖动到右侧牌堆插入位置"}</div>
+                <div class="insert-outside-hint">${placed ? "已放置，可拖回撤销/改位置" : "拖动到右侧牌堆插入位置，或点击格子"}</div>
               </div>
               <div class="insert-board${dragging ? " dragging" : ""}" data-player="${playerId}">
                 ${board}
@@ -1995,6 +2182,11 @@ function createApp() {
             <div class="spacer"></div>
             <button type="button" data-action="apply" ${canApply}>确认该方构筑</button>
           </div>
+          ${previewCards.length > 0 ? `
+          <div class="draw-order-preview">
+            <div class="draw-order-preview-title">构筑牌库开牌顺序预览（顶→底）</div>
+            ${previewRows}
+          </div>` : ""}
         </div>
       `;
     }
@@ -2191,6 +2383,14 @@ function createApp() {
 
       const zoneSelector = `.dropzone[data-player="${playerId}"]`;
       card.querySelectorAll(zoneSelector).forEach((zone) => {
+        zone.addEventListener("click", () => {
+          const pos = Number(zone.getAttribute("data-pos"));
+          if (!Number.isFinite(pos)) return;
+          choice.insertPos = pos;
+          choice.previewPos = null;
+          choice.dragging = false;
+          render();
+        });
         zone.addEventListener("dragover", (ev) => {
           ev.preventDefault();
           ev.dataTransfer.dropEffect = "move";
