@@ -9,14 +9,14 @@ import {
 import {
   C_JOIN_ROOM, C_ICON_SELECT, C_PICK_FIGHTERS, C_DECK_ORDER,
   C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END, C_CONFIRM_INSERT_DISPLAY,
-  C_DRAFT_PICK1, C_DRAFT_PICK2, C_SWITCH_TO_FREE,
+  C_DRAFT_PICK1, C_DRAFT_BAN, C_DRAFT_PICK2, C_SWITCH_TO_FREE,
   S_GALLERY_INIT, S_ICON_PENDING, S_ICON_HINT, S_ICON_EXPIRED, S_PAIRED,
   S_ROOM_JOINED, S_OPPONENT_JOINED,
   S_OPPONENT_DISCONNECTED, S_OPPONENT_RECONNECTED,
   S_PICKS_LOCKED, S_GAME_START,
   S_WAITING, S_ELF_PICK_NEEDED,
   S_GAME_OVER, S_STATE_SYNC, S_ERROR,
-  S_DRAFT_ASSIGNED, S_DRAFT_REVEAL, S_SWITCH_TO_FREE,
+  S_DRAFT_ASSIGNED, S_DRAFT_PICK_REVEAL, S_DRAFT_REVEAL, S_SWITCH_TO_FREE,
   makeMsg, parseMsg,
 } from "./shared/protocol.js";
 
@@ -413,7 +413,7 @@ function createApp() {
         break;
       }
       case S_DRAFT_ASSIGNED: {
-        // Full transition to SETUP phase with draft1 step
+        // Full transition to SETUP phase with draft1_pick step
         clientPhase = "picking";
         hideLobby();
         hideWaiting();
@@ -422,7 +422,7 @@ function createApp() {
         state = {
           phase: PHASE.SETUP,
           showDecks: false,
-          setup: { step: "draft1", myPool: msg.myPool, myPick: null, myDiscard: null, confirmed: false },
+          setup: { step: "draft1_pick", myPool: msg.myPool, myPick: null, confirmed: false },
           lastFlip: null,
           lastRound: null,
           awaitingConstruction: false,
@@ -432,16 +432,49 @@ function createApp() {
         render();
         break;
       }
-      case S_DRAFT_REVEAL: {
+      case S_DRAFT_PICK_REVEAL: {
+        // Picks revealed; open ban UI on my own 5 remaining.
+        const prev = state.setup || {};
         state.setup = {
-          step: "draft2",
+          step: "draft_ban",
+          myPool: prev.myPool || [],
+          myPick: prev.myPick,
           opponentPick: msg.opponentPick,
-          exchangePool: msg.exchangePool,
-          myPick2: null,
+          myBan: null,
           confirmed: false,
         };
         hideWaiting();
         render();
+        break;
+      }
+      case S_DRAFT_REVEAL: {
+        // Both bans in. Pause on a reveal screen showing bans, then advance to pick2.
+        const prev = state.setup || {};
+        state.setup = {
+          step: "ban_reveal",
+          myPick: prev.myPick,
+          opponentPick: msg.opponentPick,
+          myBan: msg.myBan,
+          opponentBan: msg.opponentBan,
+          exchangePool: msg.exchangePool,
+        };
+        hideWaiting();
+        render();
+        setTimeout(() => {
+          // Only advance if we are still sitting on the ban_reveal step (not blown away by reconnect/other)
+          if (state.setup && state.setup.step === "ban_reveal") {
+            state.setup = {
+              step: "draft2",
+              opponentPick: msg.opponentPick,
+              opponentBan: msg.opponentBan,
+              myBan: msg.myBan,
+              exchangePool: msg.exchangePool,
+              myPick2: null,
+              confirmed: false,
+            };
+            render();
+          }
+        }, 2500);
         break;
       }
       case S_SWITCH_TO_FREE: {
@@ -1315,33 +1348,28 @@ function createApp() {
         return html;
       };
 
-      // ── Draft1: each player picks 1, discards 1 from their 6 ──
-      if (setup.step === "draft1") {
+      // ── Draft1_pick: each player picks 1 from their 6 ──
+      if (setup.step === "draft1_pick") {
         const myPool = setup.myPool || [];
         const confirmed = !!setup.confirmed;
-        const slotContent = (name, slotType) => {
-          if (!name) return `<div class="setup-slot-placeholder">${slotType === "pick" ? "点击选择" : "点击弃置"}</div>`;
-          return `<div class="setup-picked" data-draft-clear="${escapeHtml(slotType)}">${headshotImgHtml(name, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(name)}</div></div>`;
+        const slotContent = (name) => {
+          if (!name) return `<div class="setup-slot-placeholder">点击选择</div>`;
+          return `<div class="setup-picked" data-draft-clear="pick">${headshotImgHtml(name, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(name)}</div></div>`;
         };
         const poolCells = myPool.map((n) => {
           const isPick = n === setup.myPick;
-          const isDiscard = n === setup.myDiscard;
-          const cls = isPick ? " draft-pick" : isDiscard ? " draft-discard" : "";
+          const cls = isPick ? " draft-pick" : "";
           return `<div class="setup-fighter${cls}${confirmed ? " disabled" : ""}" data-draft-fighter="${escapeHtml(n)}">${headshotImgHtml(n, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(n)}</div></div>`;
         });
         els.constructionPanel.innerHTML = `
           <div class="construction-card">
-            <div><strong>选择战士</strong>：保留 1 名，弃置 1 名</div>
-            <div style="margin-top:4px;font-size:12px;opacity:0.65">剩余 4 名将交换给对手选择</div>
+            <div><strong>选择战士</strong>：从你的 6 名战士中选择 1 名</div>
+            <div style="margin-top:4px;font-size:12px;opacity:0.65">双方同时选择，选后互相展示</div>
             <div style="margin-top:14px;display:flex;gap:16px;align-items:flex-start;">
               <div style="min-width:180px;display:flex;flex-direction:column;gap:12px;">
                 <div>
                   <div style="font-size:11px;opacity:0.7;margin-bottom:4px;">✓ 保留</div>
-                  <div class="setup-slot draft-pick-slot" data-draft-slot="pick">${slotContent(setup.myPick, "pick")}</div>
-                </div>
-                <div>
-                  <div style="font-size:11px;opacity:0.7;margin-bottom:4px;">✗ 弃置</div>
-                  <div class="setup-slot draft-discard-slot" data-draft-slot="discard">${slotContent(setup.myDiscard, "discard")}</div>
+                  <div class="setup-slot draft-pick-slot" data-draft-slot="pick">${slotContent(setup.myPick)}</div>
                 </div>
               </div>
               <div class="setup-pool" style="flex:1;grid-template-columns:repeat(3,minmax(0,1fr));min-height:auto;">
@@ -1353,7 +1381,7 @@ function createApp() {
               <div class="spacer"></div>
               ${confirmed
                 ? `<span style="opacity:0.7;font-size:13px;">等待对手...</span>`
-                : `<button type="button" id="draft1-confirm" ${setup.myPick && setup.myDiscard ? "" : "disabled"}>确认</button>`
+                : `<button type="button" id="draft1-confirm" ${setup.myPick ? "" : "disabled"}>确认</button>`
               }
             </div>
           </div>
@@ -1363,32 +1391,130 @@ function createApp() {
             el.addEventListener("click", () => {
               if (el.classList.contains("disabled")) return;
               const name = el.getAttribute("data-draft-fighter");
-              if (name === setup.myPick) { setup.myPick = null; }
-              else if (name === setup.myDiscard) { setup.myDiscard = null; }
-              else if (!setup.myPick) { setup.myPick = name; }
-              else if (!setup.myDiscard) { setup.myDiscard = name; }
-              else { setup.myDiscard = name; }
+              setup.myPick = (name === setup.myPick) ? null : name;
               render();
             });
           });
           els.constructionPanel.querySelectorAll("[data-draft-clear]").forEach((el) => {
-            el.addEventListener("click", () => {
-              const slotType = el.getAttribute("data-draft-clear");
-              if (slotType === "pick") setup.myPick = null;
-              else setup.myDiscard = null;
-              render();
-            });
+            el.addEventListener("click", () => { setup.myPick = null; render(); });
           });
           document.getElementById("draft-switch-free")?.addEventListener("click", () => {
             sendMsg(C_SWITCH_TO_FREE, {});
           });
           document.getElementById("draft1-confirm")?.addEventListener("click", () => {
-            if (!setup.myPick || !setup.myDiscard) return;
+            if (!setup.myPick) return;
             setup.confirmed = true;
             render();
-            sendMsg(C_DRAFT_PICK1, { pick: setup.myPick, discard: setup.myDiscard });
+            sendMsg(C_DRAFT_PICK1, { pick: setup.myPick });
           });
         }
+        return;
+      }
+
+      // ── Draft_ban: pick1s revealed; each player bans 1 from own 5 remaining ──
+      if (setup.step === "draft_ban") {
+        const myPool = setup.myPool || [];
+        const myPick = setup.myPick;
+        const opponentPick = setup.opponentPick;
+        const confirmed = !!setup.confirmed;
+        // 5 remaining (pool minus own pick)
+        const banCandidates = myPool.filter((n) => n !== myPick);
+        const slotContent = (name) => {
+          if (!name) return `<div class="setup-slot-placeholder">点击弃置</div>`;
+          return `<div class="setup-picked" data-draft-clear="ban">${headshotImgHtml(name, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(name)}</div></div>`;
+        };
+        const poolCells = banCandidates.map((n) => {
+          const isBan = n === setup.myBan;
+          const cls = isBan ? " draft-discard" : "";
+          return `<div class="setup-fighter${cls}${confirmed ? " disabled" : ""}" data-draft-ban="${escapeHtml(n)}">${headshotImgHtml(n, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(n)}</div></div>`;
+        });
+        els.constructionPanel.innerHTML = `
+          <div class="construction-card">
+            <div><strong>弃置战士</strong>：从剩余 5 名中弃置 1 名</div>
+            <div style="margin-top:4px;font-size:12px;opacity:0.65">剩余 4 名将交换给对手选择</div>
+            <div style="margin-top:14px;display:flex;gap:24px;align-items:flex-start;">
+              <div style="min-width:150px;display:flex;flex-direction:column;gap:10px;">
+                <div>
+                  <div style="font-size:11px;opacity:0.7;margin-bottom:4px;">✓ 你已选</div>
+                  <div class="setup-fighter" style="cursor:default;pointer-events:none;">
+                    ${headshotImgHtml(myPick, "setup-headshot")}
+                    <div class="setup-fighter-name">${escapeHtml(myPick ?? "")}</div>
+                  </div>
+                </div>
+                <div>
+                  <div style="font-size:11px;opacity:0.7;margin-bottom:4px;">对手已选</div>
+                  <div class="setup-fighter" style="cursor:default;pointer-events:none;">
+                    ${headshotImgHtml(opponentPick, "setup-headshot")}
+                    <div class="setup-fighter-name">${escapeHtml(opponentPick ?? "")}</div>
+                  </div>
+                </div>
+                <div style="margin-top:4px;">
+                  <div style="font-size:11px;opacity:0.7;margin-bottom:4px;">✗ 弃置</div>
+                  <div class="setup-slot draft-discard-slot" data-draft-slot="ban">${slotContent(setup.myBan)}</div>
+                </div>
+              </div>
+              <div style="flex:1;">
+                <div style="font-size:11px;opacity:0.7;margin-bottom:6px;">你的剩余 5 名</div>
+                <div class="setup-pool" style="grid-template-columns:repeat(3,minmax(0,1fr));min-height:auto;">
+                  ${poolCells.join("")}
+                </div>
+              </div>
+            </div>
+            <div class="construction-row" style="margin-top:12px;">
+              <div class="spacer"></div>
+              ${confirmed
+                ? `<span style="opacity:0.7;font-size:13px;">等待对手...</span>`
+                : `<button type="button" id="draft-ban-confirm" ${setup.myBan ? "" : "disabled"}>确认弃置</button>`
+              }
+            </div>
+          </div>
+        `;
+        if (!confirmed) {
+          els.constructionPanel.querySelectorAll("[data-draft-ban]").forEach((el) => {
+            el.addEventListener("click", () => {
+              if (el.classList.contains("disabled")) return;
+              const name = el.getAttribute("data-draft-ban");
+              setup.myBan = (name === setup.myBan) ? null : name;
+              render();
+            });
+          });
+          els.constructionPanel.querySelectorAll("[data-draft-clear]").forEach((el) => {
+            el.addEventListener("click", () => { setup.myBan = null; render(); });
+          });
+          document.getElementById("draft-ban-confirm")?.addEventListener("click", () => {
+            if (!setup.myBan) return;
+            setup.confirmed = true;
+            render();
+            sendMsg(C_DRAFT_BAN, { ban: setup.myBan });
+          });
+        }
+        return;
+      }
+
+      // ── Ban reveal: brief pause showing both bans before pick2 ──
+      if (setup.step === "ban_reveal") {
+        els.constructionPanel.innerHTML = `
+          <div class="construction-card">
+            <div><strong>弃置公布</strong></div>
+            <div style="margin-top:14px;display:flex;gap:32px;justify-content:center;align-items:flex-start;">
+              <div style="text-align:center;">
+                <div style="font-size:11px;opacity:0.7;margin-bottom:6px;">你弃置了</div>
+                <div class="setup-fighter draft-discard" style="cursor:default;pointer-events:none;">
+                  ${headshotImgHtml(setup.myBan, "setup-headshot")}
+                  <div class="setup-fighter-name">${escapeHtml(setup.myBan ?? "")}</div>
+                </div>
+              </div>
+              <div style="text-align:center;">
+                <div style="font-size:11px;opacity:0.7;margin-bottom:6px;">对手弃置了</div>
+                <div class="setup-fighter draft-discard" style="cursor:default;pointer-events:none;">
+                  ${headshotImgHtml(setup.opponentBan, "setup-headshot")}
+                  <div class="setup-fighter-name">${escapeHtml(setup.opponentBan ?? "")}</div>
+                </div>
+              </div>
+            </div>
+            <div style="margin-top:12px;text-align:center;opacity:0.7;font-size:12px;">即将交换剩余战士...</div>
+          </div>
+        `;
         return;
       }
 

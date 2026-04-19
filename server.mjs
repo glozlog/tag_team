@@ -27,14 +27,14 @@ import {
 import {
   C_JOIN_ROOM, C_ICON_SELECT, C_PICK_FIGHTERS, C_DECK_ORDER,
   C_ADVANCE_BATTLE, C_ELF_PICK, C_CONSTRUCTION_CHOICE, C_CONFIRM_END, C_CONFIRM_INSERT_DISPLAY,
-  C_DRAFT_PICK1, C_DRAFT_PICK2, C_SWITCH_TO_FREE,
+  C_DRAFT_PICK1, C_DRAFT_BAN, C_DRAFT_PICK2, C_SWITCH_TO_FREE,
   S_GALLERY_INIT, S_ICON_PENDING, S_ICON_HINT, S_ICON_EXPIRED, S_PAIRED,
   S_ROOM_JOINED, S_OPPONENT_JOINED, S_OPPONENT_RECONNECTED,
   S_OPPONENT_DISCONNECTED,
   S_PICKS_LOCKED, S_GAME_START,
   S_WAITING, S_ELF_PICK_NEEDED,
   S_GAME_OVER, S_STATE_SYNC, S_ERROR,
-  S_DRAFT_ASSIGNED, S_DRAFT_REVEAL, S_SWITCH_TO_FREE,
+  S_DRAFT_ASSIGNED, S_DRAFT_PICK_REVEAL, S_DRAFT_REVEAL, S_SWITCH_TO_FREE,
   makeMsg, parseMsg,
 } from "./shared/protocol.js";
 
@@ -158,11 +158,11 @@ function createRoom() {
     fighterNames: fighterDefs.map((f) => f.name),
     draftMode: "draft", // "draft" | "free"
     draft: {
-      subPhase: null,                   // "draft1" | "draft_reveal"
+      subPhase: null,                   // "pick1" | "ban" | "pick2"
       pools: { p1: [], p2: [] },
       pick1: { p1: null, p2: null },
-      discard: { p1: null, p2: null },
-      remaining: { p1: [], p2: [] },    // each player's 4 left after pick+discard
+      ban: { p1: null, p2: null },
+      remaining: { p1: [], p2: [] },    // each player's 4 left after pick+ban
       pick2: { p1: null, p2: null },
     },
   };
@@ -175,7 +175,7 @@ function resetDraft(room) {
     subPhase: null,
     pools: { p1: [], p2: [] },
     pick1: { p1: null, p2: null },
-    discard: { p1: null, p2: null },
+    ban: { p1: null, p2: null },
     remaining: { p1: [], p2: [] },
     pick2: { p1: null, p2: null },
   };
@@ -192,7 +192,7 @@ function startDraft(room) {
   const allNames = [...fighterPoolByName.keys()].sort(() => Math.random() - 0.5);
   room.draft.pools.p1 = allNames.slice(0, 6);
   room.draft.pools.p2 = allNames.slice(6, 12);
-  room.draft.subPhase = "draft1";
+  room.draft.subPhase = "pick1";
   send(room.sockets.p1, S_DRAFT_ASSIGNED, { myPool: room.draft.pools.p1 });
   send(room.sockets.p2, S_DRAFT_ASSIGNED, { myPool: room.draft.pools.p2 });
 }
@@ -746,6 +746,7 @@ function handleMessage(ws, raw) {
     case C_JOIN_ROOM:             return onJoinRoom(ws, msg);
     case C_PICK_FIGHTERS:         return onPickFightersLegacy(ws, msg);
     case C_DRAFT_PICK1:           return onDraftPick1(ws, msg);
+    case C_DRAFT_BAN:             return onDraftBan(ws, msg);
     case C_DRAFT_PICK2:           return onDraftPick2(ws, msg);
     case C_SWITCH_TO_FREE:        return onSwitchToFree(ws, msg);
     case C_DECK_ORDER:            return onDeckOrder(ws, msg);
@@ -854,33 +855,62 @@ function onPickFightersLegacy(ws, msg) {
 function onDraftPick1(ws, msg) {
   const room = rooms.get(ws._roomCode);
   const pid = ws._playerId;
-  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "draft" || room.draft.subPhase !== "draft1") return;
+  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "draft" || room.draft.subPhase !== "pick1") return;
 
   const pick = String(msg.pick ?? "");
-  const discard = String(msg.discard ?? "");
   const myPool = room.draft.pools[pid];
-  if (!myPool.includes(pick) || !myPool.includes(discard)) { send(ws, S_ERROR, { message: "无效战士名称" }); return; }
-  if (pick === discard) { send(ws, S_ERROR, { message: "保留和弃置不能是同一名战士" }); return; }
+  if (!myPool.includes(pick)) { send(ws, S_ERROR, { message: "无效战士名称" }); return; }
 
   room.draft.pick1[pid] = pick;
-  room.draft.discard[pid] = discard;
-  // remaining[pid] = their 4 leftover (pool minus pick minus discard)
-  room.draft.remaining[pid] = myPool.filter((n) => n !== pick && n !== discard);
 
   if (room.draft.pick1.p1 && room.draft.pick1.p2) {
-    room.draft.subPhase = "draft_reveal";
-    // Each player receives: opponent's pick + opponent's remaining 4
-    send(room.sockets.p1, S_DRAFT_REVEAL, { opponentPick: room.draft.pick1.p2, exchangePool: room.draft.remaining.p2 });
-    send(room.sockets.p2, S_DRAFT_REVEAL, { opponentPick: room.draft.pick1.p1, exchangePool: room.draft.remaining.p1 });
+    room.draft.subPhase = "ban";
+    // Reveal each other's first pick; ban UI opens on client
+    send(room.sockets.p1, S_DRAFT_PICK_REVEAL, { opponentPick: room.draft.pick1.p2 });
+    send(room.sockets.p2, S_DRAFT_PICK_REVEAL, { opponentPick: room.draft.pick1.p1 });
   } else {
     send(room.sockets[oppOf(pid)], S_WAITING, { action: "draft_pick1", who: pid });
+  }
+}
+
+function onDraftBan(ws, msg) {
+  const room = rooms.get(ws._roomCode);
+  const pid = ws._playerId;
+  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "draft" || room.draft.subPhase !== "ban") return;
+
+  const ban = String(msg.ban ?? "");
+  const myPool = room.draft.pools[pid];
+  if (!myPool.includes(ban)) { send(ws, S_ERROR, { message: "无效战士名称" }); return; }
+  if (ban === room.draft.pick1[pid]) { send(ws, S_ERROR, { message: "已选战士不能弃置" }); return; }
+
+  room.draft.ban[pid] = ban;
+  // remaining[pid] = 4 leftover (pool minus own pick minus own ban)
+  room.draft.remaining[pid] = myPool.filter((n) => n !== room.draft.pick1[pid] && n !== ban);
+
+  if (room.draft.ban.p1 && room.draft.ban.p2) {
+    room.draft.subPhase = "pick2";
+    // Each player receives: opponent's pick1 + both bans + opponent's remaining 4 (swap pools)
+    send(room.sockets.p1, S_DRAFT_REVEAL, {
+      opponentPick: room.draft.pick1.p2,
+      opponentBan: room.draft.ban.p2,
+      myBan: room.draft.ban.p1,
+      exchangePool: room.draft.remaining.p2,
+    });
+    send(room.sockets.p2, S_DRAFT_REVEAL, {
+      opponentPick: room.draft.pick1.p1,
+      opponentBan: room.draft.ban.p1,
+      myBan: room.draft.ban.p2,
+      exchangePool: room.draft.remaining.p1,
+    });
+  } else {
+    send(room.sockets[oppOf(pid)], S_WAITING, { action: "draft_ban", who: pid });
   }
 }
 
 function onDraftPick2(ws, msg) {
   const room = rooms.get(ws._roomCode);
   const pid = ws._playerId;
-  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "draft" || room.draft.subPhase !== "draft_reveal") return;
+  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "draft" || room.draft.subPhase !== "pick2") return;
 
   const pick = String(msg.pick ?? "");
   // This player receives the opponent's remaining pool
@@ -902,8 +932,8 @@ function onDraftPick2(ws, msg) {
 function onSwitchToFree(ws, msg) {
   const room = rooms.get(ws._roomCode);
   const pid = ws._playerId;
-  // Only allowed during draft1 subphase — once reveal has happened, opponent info is exposed
-  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "draft" || room.draft.subPhase !== "draft1") return;
+  // Only allowed during pick1 subphase — once picks are revealed, opponent info is exposed
+  if (!room || !pid || room.phase !== "picking" || room.draftMode !== "draft" || room.draft.subPhase !== "pick1") return;
 
   room.draftMode = "free";
   resetDraft(room);

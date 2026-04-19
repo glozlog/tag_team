@@ -8,7 +8,8 @@ export const C_ELF_PICK = "C_ELF_PICK";
 export const C_CONSTRUCTION_CHOICE = "C_CONSTRUCTION_CHOICE";
 export const C_CONFIRM_END = "C_CONFIRM_END";
 export const C_CONFIRM_INSERT_DISPLAY = "C_CONFIRM_INSERT_DISPLAY";
-export const C_DRAFT_PICK1 = "C_DRAFT_PICK1";       // { pick: string, discard: string }
+export const C_DRAFT_PICK1 = "C_DRAFT_PICK1";       // { pick: string }
+export const C_DRAFT_BAN = "C_DRAFT_BAN";           // { ban: string }
 export const C_DRAFT_PICK2 = "C_DRAFT_PICK2";       // { pick: string }
 export const C_SWITCH_TO_FREE = "C_SWITCH_TO_FREE"; // {} — switch room to free-pick mode
 
@@ -32,9 +33,10 @@ export const S_CONSTRUCTION_DONE = "S_CONSTRUCTION_DONE";
 export const S_GAME_OVER = "S_GAME_OVER";
 export const S_STATE_SYNC = "S_STATE_SYNC";
 export const S_ERROR = "S_ERROR";
-export const S_DRAFT_ASSIGNED = "S_DRAFT_ASSIGNED"; // { myPool: string[] } — sent individually
-export const S_DRAFT_REVEAL = "S_DRAFT_REVEAL";     // { opponentPick: string, exchangePool: string[] }
-export const S_SWITCH_TO_FREE = "S_SWITCH_TO_FREE"; // {} — room switched to free-pick mode
+export const S_DRAFT_ASSIGNED = "S_DRAFT_ASSIGNED";       // { myPool: string[] } — sent individually
+export const S_DRAFT_PICK_REVEAL = "S_DRAFT_PICK_REVEAL"; // { opponentPick: string } — sent after both pick1s in; advances client to ban step
+export const S_DRAFT_REVEAL = "S_DRAFT_REVEAL";           // { opponentPick: string, opponentBan: string, myBan: string, exchangePool: string[] } — sent after both bans in; client pauses to show bans then advances to pick2
+export const S_SWITCH_TO_FREE = "S_SWITCH_TO_FREE";       // {} — room switched to free-pick mode
 
 export function makeMsg(type, payload = {}) {
   return JSON.stringify({ type, ...payload });

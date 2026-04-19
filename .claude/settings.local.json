@@ -6,7 +6,11 @@
       "Bash(npm init:*)",
       "Bash(npm install:*)",
       "Bash(timeout 5 node server.mjs)",
-      "Bash(node -e \":*)"
+      "Bash(node -e \":*)",
+      "Bash(node --check server.mjs)",
+      "Bash(node --check shared/protocol.js)",
+      "Bash(node --check shared/game-logic.js)",
+      "Bash(node --check app.js)"
     ]
   }
 }
