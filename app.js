@@ -404,9 +404,11 @@ function createApp() {
         clientPhase = "ordering";
         hideWaiting();
         const myPicks = msg[`${myPlayerId}Picks`] ?? (myPlayerId === "p1" ? msg.p1Picks : msg.p2Picks);
+        const oppPicks = myPlayerId === "p1" ? msg.p2Picks : msg.p1Picks;
         state.setup = {
           step: "build",
           myPicks: myPicks,
+          oppPicks: oppPicks,
           topName: null,
         };
         render();
@@ -465,6 +467,7 @@ function createApp() {
           if (state.setup && state.setup.step === "ban_reveal") {
             state.setup = {
               step: "draft2",
+              myPick: state.setup.myPick,
               opponentPick: msg.opponentPick,
               opponentBan: msg.opponentBan,
               myBan: msg.myBan,
@@ -1526,16 +1529,24 @@ function createApp() {
           const isSelected = n === setup.myPick2;
           return `<div class="setup-fighter${isSelected ? " draft-pick" : ""}${confirmed ? " disabled" : ""}" data-draft-fighter2="${escapeHtml(n)}">${headshotImgHtml(n, "setup-headshot")}<div class="setup-fighter-name">${escapeHtml(n)}</div></div>`;
         });
+        const recapCard = (label, name, extraCls = "") => `
+          <div style="text-align:center;">
+            <div style="font-size:11px;opacity:0.7;margin-bottom:4px;">${label}</div>
+            <div class="setup-fighter${extraCls}" style="cursor:default;pointer-events:none;">
+              ${headshotImgHtml(name, "setup-headshot")}
+              <div class="setup-fighter-name">${escapeHtml(name ?? "")}</div>
+            </div>
+          </div>
+        `;
         els.constructionPanel.innerHTML = `
           <div class="construction-card">
             <div><strong>选择战士</strong>：从对手剩余战士中选 1 名</div>
             <div style="margin-top:14px;display:flex;gap:24px;align-items:flex-start;">
-              <div style="min-width:140px;">
-                <div style="font-size:11px;opacity:0.7;margin-bottom:6px;">对手选择了</div>
-                <div class="setup-fighter" style="cursor:default;pointer-events:none;">
-                  ${headshotImgHtml(setup.opponentPick, "setup-headshot")}
-                  <div class="setup-fighter-name">${escapeHtml(setup.opponentPick ?? "")}</div>
-                </div>
+              <div style="min-width:200px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;">
+                ${recapCard("✓ 你已选", setup.myPick)}
+                ${recapCard("对手已选", setup.opponentPick)}
+                ${recapCard("✗ 你弃置", setup.myBan, " draft-discard")}
+                ${recapCard("✗ 对手弃置", setup.opponentBan, " draft-discard")}
               </div>
               <div style="flex:1;">
                 <div style="font-size:11px;opacity:0.7;margin-bottom:6px;">你的选择（选 1 名）</div>
@@ -1924,8 +1935,27 @@ function createApp() {
       // ── Online mode: deck order UI ──
       if (clientPhase === "ordering" || clientPhase === "waiting_order") {
         const myPicks = setup.myPicks || [];
+        const oppPicks = setup.oppPicks || [];
         const topName = setup.topName || null;
         const waiting = clientPhase === "waiting_order";
+        const recapCardHtml = (name) => `
+          <div class="setup-fighter draft-pick" style="cursor:default;pointer-events:none;">
+            ${headshotImgHtml(name, "setup-headshot")}
+            <div class="setup-fighter-name">${escapeHtml(name ?? "")}</div>
+          </div>
+        `;
+        const recapRow = `
+          <div style="display:flex;gap:36px;justify-content:center;align-items:flex-start;margin-top:8px;margin-bottom:14px;">
+            <div>
+              <div style="font-size:11px;opacity:0.7;margin-bottom:6px;text-align:center;">我方</div>
+              <div style="display:flex;gap:10px;">${myPicks.map(recapCardHtml).join("")}</div>
+            </div>
+            <div>
+              <div style="font-size:11px;opacity:0.7;margin-bottom:6px;text-align:center;">对手</div>
+              <div style="display:flex;gap:10px;">${oppPicks.map(recapCardHtml).join("")}</div>
+            </div>
+          </div>
+        `;
         const pickCards = myPicks.map((name) => {
           const n1 = cardName1(name);
           const text = cardText(name);
@@ -1939,6 +1969,7 @@ function createApp() {
         });
         els.constructionPanel.innerHTML = `
           <div class="construction-card">
+            ${recapRow}
             <div><strong>构筑起手</strong>：选择哪位战士的 #1 卡牌放在战斗牌堆顶部</div>
             <div class="construction-row">${pickCards.join("")}</div>
             <div class="construction-row">
